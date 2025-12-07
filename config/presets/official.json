@@ -1,8 +1,0 @@
-{
-  "name": "official",
-  "display_name": "Official API",
-  "description": "直接连接官方 API 接口进行测试。[本项目仅支持检测基于字典的简单过滤，输出端和基于语义的拦截无法检测]",
-  "block_status_codes": [400, 422],
-  "retry_status_codes": [429, 500, 502, 503, 504],
-  "block_keywords": []
-}

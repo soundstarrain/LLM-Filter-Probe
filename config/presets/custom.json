@@ -1,8 +1,0 @@
-{
-  "name": "custom",
-  "display_name": "Custom",
-  "description": "用户自定义配置，所有参数均可调整。",
-  "block_status_codes": [400, 422, 460, 500] ,
-  "retry_status_codes": [429, 502, 503, 504],
-  "block_keywords": ["sensitive", "violation", "banned"]
-}

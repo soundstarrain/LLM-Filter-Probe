@@ -1,7 +1,0 @@
-{
-  "concurrency": 15,
-  "timeout_seconds": 30,
-  "jitter": 0.5,
-  "token_limit": 20,
-  "chunk_size": 30000
-}
