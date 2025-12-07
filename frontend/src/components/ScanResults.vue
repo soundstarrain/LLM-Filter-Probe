@@ -35,7 +35,7 @@
     <div class="preview-section">
       <div class="table-container">
         <n-data-table
-          :columns="resultColumns"
+          :columns="previewColumns"
           :data="displayedResults"
           :pagination="false"
           size="small"
@@ -70,9 +70,9 @@
 
         <div class="modal-table">
           <n-data-table
-            :columns="resultColumns"
-            :data="filteredResults"
-            :pagination="{ pageSize: 20 }"
+            :columns="modalColumns"
+            :data="pagedResults"
+            :pagination="modalPagination"
             size="small"
             striped
           />
@@ -102,7 +102,7 @@
  * - 一个包含搜索和分页功能的模态框，用于展示全部结果。
  * - 将结果导出为文本文件的功能。
  */
-import { ref, computed, h } from 'vue';
+import { ref, computed, h, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { NButton, NDataTable, NModal, NInput, NInputGroup } from 'naive-ui';
 import { useRootStore } from '../stores/rootStore';
@@ -116,6 +116,11 @@ const exportMessage = ref('');
 const exportMessageType = ref('success');
 const showDetailModal = ref(false);
 const searchKeyword = ref('');
+
+// 分页状态（默认每页 10 条）
+const modalPage = ref(1);
+const modalPageSize = ref(10);
+const modalPageSizes = [10, 20, 50, 100];
 
 /**
  * 根据关键词列表构建用于数据表的数据。
@@ -153,7 +158,47 @@ const filteredResults = computed(() => {
   return buildTableData(filtered);
 });
 
-const resultColumns = [
+// 分页后的数据
+const pagedResults = computed(() => {
+  const start = (modalPage.value - 1) * modalPageSize.value;
+  const end = start + modalPageSize.value;
+  return filteredResults.value.slice(start, end);
+});
+
+// 受控分页对象（Naive UI）
+const modalPagination = computed(() => ({
+  page: modalPage.value,
+  pageSize: modalPageSize.value,
+  pageCount: Math.max(1, Math.ceil(filteredResults.value.length / modalPageSize.value) || 1),
+  showSizePicker: true,
+  pageSizes: modalPageSizes,
+  onUpdatePage: (page) => {
+    modalPage.value = page;
+  },
+  onUpdatePageSize: (size) => {
+    modalPageSize.value = size;
+    modalPage.value = 1; // 切换每页条数时回到第一页
+  },
+}));
+
+// 搜索或数据变化时，重置到第一页
+watch(
+  () => [searchKeyword.value, resultKeywords.value.length],
+  () => {
+    modalPage.value = 1;
+  }
+);
+
+// 打开弹窗时重置页码
+watch(
+  () => showDetailModal.value,
+  (val) => {
+    if (val) modalPage.value = 1;
+  }
+);
+
+// 预览列（无全局序号偏移）
+const previewColumns = [
   { title: '序号', key: 'index', width: 60, render: (_, index) => index + 1 },
   {
     title: '敏感词',
@@ -166,6 +211,37 @@ const resultColumns = [
     title: '出现次数',
     key: 'count',
     width: 100,
+    align: 'center',
+    render: (row) => `${row.count} 次`,
+  },
+  {
+    title: '位置',
+    key: 'locations',
+    ellipsis: { tooltip: false },
+    render: (row) => h(DisplayPositions, { locations: row.locations, truncateAt: 5 }),
+  },
+];
+
+// 弹窗列（带全局序号偏移）
+const modalColumns = [
+  {
+    title: '序号',
+    key: 'index',
+    width: 70,
+    align: 'center',
+    render: (_, index) => (modalPage.value - 1) * modalPageSize.value + index + 1,
+  },
+  {
+    title: '敏感词',
+    key: 'keyword',
+    width: 180,
+    ellipsis: { tooltip: true },
+    render: (row) => `"${row.keyword}"`,
+  },
+  {
+    title: '出现次数',
+    key: 'count',
+    width: 110,
     align: 'center',
     render: (row) => `${row.count} 次`,
   },
