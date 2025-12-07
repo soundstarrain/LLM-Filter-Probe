@@ -111,7 +111,10 @@ if not exist "backend\venv" (
 echo   正在激活虚拟环境并安装依赖...
 pushd backend
 call venv\Scripts\activate.bat
-pip install -q -r ../requirements.txt >nul 2>&1
+pip install -r ..\requirements.txt ^
+    --trusted-host pypi.org ^
+    --trusted-host pypi.python.org ^
+    --trusted-host files.pythonhosted.org
 if errorlevel 1 (
     echo 错误: 后端依赖安装失败。
     echo   请尝试在 backend 目录手动运行: venv\Scripts\activate.bat 然后 pip install -r ../requirements.txt
@@ -134,7 +137,7 @@ echo.
 cd frontend
 if not exist "node_modules" (
     echo   正在安装前端依赖，请稍候...
-    call npm install --legacy-peer-deps >nul 2>&1
+    call npm install --legacy-peer-deps
     if errorlevel 1 (
         echo 前端依赖安装失败
         echo   请尝试手动安装: npm install

@@ -110,7 +110,10 @@ fi
 
 echo "  正在激活虚拟环境并安装依赖..."
 source backend/venv/bin/activate
-pip install -q -r requirements.txt > /dev/null 2>&1
+pip install -r requirements.txt \
+    --trusted-host pypi.org \
+    --trusted-host pypi.python.org \
+    --trusted-host files.pythonhosted.org
 if [ $? -ne 0 ]; then
     echo -e "${RED}错误: 后端依赖安装失败${NC}"
     echo "  请尝试手动运行: source backend/venv/bin/activate && pip install -r requirements.txt"
