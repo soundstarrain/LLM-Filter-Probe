@@ -111,9 +111,8 @@ fi
 echo "  正在激活虚拟环境并安装依赖..."
 source backend/venv/bin/activate
 pip install -r requirements.txt \
-    --trusted-host pypi.org \
-    --trusted-host pypi.python.org \
-    --trusted-host files.pythonhosted.org
+    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    --trusted-host pypi.tuna.tsinghua.edu.cn
 if [ $? -ne 0 ]; then
     echo -e "${RED}错误: 后端依赖安装失败${NC}"
     echo "  请尝试手动运行: source backend/venv/bin/activate && pip install -r requirements.txt"
@@ -134,7 +133,7 @@ echo ""
 if [ ! -d "frontend/node_modules" ]; then
     echo "  正在安装前端依赖，请稍候..."
     cd frontend
-    npm install --legacy-peer-deps > ../logs/npm_install.log 2>&1
+    npm install --legacy-peer-deps --registry=https://registry.npmmirror.com
     if [ $? -ne 0 ]; then
         echo -e "${RED}错误: 前端依赖安装失败${NC}"
         echo "  请尝试手动安装: npm install"
