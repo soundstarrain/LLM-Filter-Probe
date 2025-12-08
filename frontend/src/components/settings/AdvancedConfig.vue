@@ -164,11 +164,15 @@
               <div style="max-width: 300px; line-height: 1.6">
                 <strong>边界重叠说明 (防漏检)</strong><br />
                 <strong>范围：0-1000 字符</strong><br />
-                二分切分时的重叠安全区，防止敏感词被分割。<br />
-                • <strong>15</strong>：推荐值，覆盖长词<br />
+                分块间的重叠字符数。决定了是否会漏掉跨边界的敏感词。<br />
+                • <strong>12-15</strong>：推荐值，覆盖中文敏感词<br />
                 • <strong>0-10</strong>：较小重叠，适合短敏感词<br />
                 • <strong>20-50</strong>：更安全但会增加重复检测<br />
-                💡 中文检测设置为 15 即可。建议设为最大敏感词长度的 2 倍。
+                <br />
+                <strong style="color: #ff9c6e">⚠️ 修改此值后，请务必同步调整'切换阈值'</strong><br />
+                推荐公式：<strong>阈值 = (重叠值 × 2) + 10</strong><br />
+                例如重叠为 12 时，阈值建议设为 34。<br />
+                💡 建议设为最大敏感词长度的 2 倍以上。
               </div>
             </n-popover>
           </n-form-item>
@@ -190,25 +194,30 @@
               <div style="max-width: 300px; line-height: 1.6">
                 <strong>切换阈值说明</strong><br />
                 <strong>范围：20-100 字符</strong><br />
-                当文本片段小于此长度时，启动微观精确扫描。<br />
-                • <strong>30-40</strong>：推荐值，平衡二分和精确定位<br />
-                • <strong>20-30</strong>：更多使用精确定位，速度较慢<br />
-                • <strong>40-60</strong>：更多使用二分查找，速度较快<br />
+                决定何时停止二分查找并进行精细扫描。<br />
                 <br />
-                <strong style="color: #ff6b6b">⚠️ 重要：必须满足 threshold > 2 × overlap</strong><br />
-                当前：{{ settingsConfig.algorithm_switch_threshold }} >
-                {{
-                  settingsConfig.overlap_size * 2
-                }}
+                <strong style="color: #52c41a">🟢 推荐公式：(重叠值 × 2) + 10</strong><br />
+                当前推荐值：{{ settingsConfig.overlap_size * 2 + 10 }}<br />
+                <br />
+                • <strong>高效区 (≥ 2×重叠 + 10)</strong>: 宏观二分与微观扫描的完美平衡点，API 调用效率最高。<br />
+                • <strong>低效区 (2×重叠 < 阈值 < 2×重叠 + 10)</strong>: 二分切分收益不足，API 调用增多，导致变慢。<br />
+                • <strong>死循环区 (≤ 2×重叠)</strong>: 会导致无限递归，系统强制拦截。<br />
+                <br />
+                <strong style="color: #ff6b6b">🔴 禁止值：阈值 ≤ 2 × 重叠大小 (会导致死循环)</strong><br />
+                当前状态：{{ settingsConfig.algorithm_switch_threshold }} vs {{ settingsConfig.overlap_size * 2 + 10 }}
                 <span
-                  v-if="
-                    settingsConfig.algorithm_switch_threshold >
-                    settingsConfig.overlap_size * 2
-                  "
+                  v-if="settingsConfig.algorithm_switch_threshold >= settingsConfig.overlap_size * 2 + 10"
                   style="color: #52c41a"
-                  >✓ 安全</span
+                  >✓ 高效</span
                 >
-                <span v-else style="color: #ff6b6b">✗ 危险（可能死循环）</span>
+                <span
+                  v-else-if="
+                    settingsConfig.algorithm_switch_threshold > settingsConfig.overlap_size * 2
+                  "
+                  style="color: #faad14"
+                  >⚠️ 低效</span
+                >
+                <span v-else style="color: #ff6b6b">✗ 危险（死循环）</span>
               </div>
             </n-popover>
           </n-form-item>
@@ -219,7 +228,7 @@
       <!-- 保存按钮 -->
       <div class="action-buttons">
         <div v-if="!isThresholdValid" class="validation-warning">
-          ⚠️ 切换阈值必须大于 2 × 重叠大小，否则会导致死循环
+          🔴 切换阈值必须大于 2 × 重叠大小，否则会导致死循环。建议设为 {{ settingsConfig.overlap_size * 2 + 10 }} 以获得最佳效率。
         </div>
         <div class="buttons-wrapper">
           <n-button type="primary" ghost :disabled="disabled" size="medium" @click="handleReset">
@@ -289,7 +298,8 @@ const { settingsConfig } = storeToRefs(rootStore);
 
 /**
  * 计算切换阈值是否有效
- * 必须满足：algorithm_switch_threshold > 2 * overlap_size
+ * 必须满足：algorithm_switch_threshold > 2 * overlap_size（防止死循环）
+ * 推荐值：algorithm_switch_threshold = 2 * overlap_size + 10（高效区）
  */
 const isThresholdValid = computed(() => {
   return settingsConfig.value.algorithm_switch_threshold > settingsConfig.value.overlap_size * 2;
@@ -302,7 +312,7 @@ const handleSave = async () => {
   // 验证阈值
   if (!isThresholdValid.value) {
     message.error(
-      `❌ 切换阈值必须大于 2 × 重叠大小 (当前：${settingsConfig.value.algorithm_switch_threshold} ≤ ${settingsConfig.value.overlap_size * 2})`
+      `❌ 切换阈值必须大于 2 × 重叠大小 (当前：${settingsConfig.value.algorithm_switch_threshold} ≤ ${settingsConfig.value.overlap_size * 2})。建议设为 ${settingsConfig.value.overlap_size * 2 + 10}`
     );
     return;
   }

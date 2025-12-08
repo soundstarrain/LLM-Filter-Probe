@@ -106,10 +106,11 @@ config/
 - 类型：Integer，范围 20-100，默认 35
 - 说明：宏观二分转微观扫描的临界点。当文本片段长度小于或等于此值时，停止二分查找，启动微观精确扫描。
 - **【重要】强依赖关系**：必须满足 `algorithm_switch_threshold > 2 × overlap_size`，否则会导致无限递归（死循环）。
-- 建议值：
-  - 30-40：推荐值，平衡二分和精确定位的效率（默认 35）
-  - 20-30：更多使用精确定位，精度更高但速度较慢
-  - 40-60：更多使用二分查找，速度更快但可能精度略低
+- **【效率黄金法则】**：强烈建议设置为 `(overlap_size × 2) + 10`，以获得最佳 API 调用效率。
+- 建议值分析：
+  - **高效区 (≥ 2×重叠 + 10)**: 例如 `overlap=12` 时设为 `34` 及以上。在此区间，二分查找与微观扫描的交接效率最高，总耗时最短。
+  - **低效区 (2×重叠 < 阈值 < 2×重叠 + 10)**: 例如 `overlap=12` 时设为 `25-33`。此时二分切分收益不足，每次递归仅减少少量字符，导致 API 调用次数增多，反而降低了宏观扫描的效率。
+  - **死循环区 (≤ 2×重叠)**: 例如 `overlap=12` 时设为 `24` 及以下。这会导致无限递归，系统强制拦截。
 
 ### 10) use_system_proxy（系统代理）
 - 类型：Boolean，默认 true
@@ -236,8 +237,9 @@ function precision_scan(text):
 ```
 
 ### 关键参数与效果
-- **algorithm_switch_threshold**：二分与精确定位的切换点。越小越精确但速度慢，越大速度快但可能精度略低。默认 35，推荐 30-50。
+- **algorithm_switch_threshold**：二分与精确定位的切换点。默认 35，推荐设为 `(overlap_size × 2) + 10`。
   - **【重要】必须满足：threshold > 2 × overlap_size，否则导致死循环**
+  - **【推荐】设为 threshold = (overlap_size × 2) + 10，以获得最佳效率**
 - **overlap_size**：决定跨块边界是否会遗漏命中。若最长敏感词为 L，建议 overlap ≥ 2×L，以覆盖边界两侧搜索空间。
 - **max_recursion_depth**：决定二分算法能否在有限步内收敛到短区间；文本更长或阈值更苛刻时可上调。
 - **algorithm_mode**：使用 `hybrid` 可自动在 Binary/Precision 之间切换，通常兼顾速度与精度。
@@ -262,10 +264,16 @@ function precision_scan(text):
 algorithm_switch_threshold > 2 × overlap_size
 ```
 
+**高效条件**（强烈推荐）：
+```
+algorithm_switch_threshold = (2 × overlap_size) + 10
+```
+
 **示例**：
-- ✓ 安全：threshold=40, overlap=12 → 40 > 24
-- ✗ 危险：threshold=25, overlap=15 → 25 ≤ 30（会导致死循环）
-- ✓ 安全：threshold=50, overlap=15 → 50 > 30
+- ✓ 高效：threshold=34, overlap=12 → 34 = (2×12) + 10
+- ✓ 安全但低效：threshold=25, overlap=12 → 25 > 24 但 < 34
+- ✗ 危险：threshold=24, overlap=12 → 24 ≤ 24（会导致死循环）
+- ✓ 高效：threshold=40, overlap=15 → 40 = (2×15) + 10
 
 ---
 
@@ -293,6 +301,49 @@ algorithm_switch_threshold > 2 × overlap_size
 ---
 
 ## 参数调优指南
+
+### ⚡️ 效率调优：加法缓冲区黄金法则
+
+在配置 `algorithm_switch_threshold` (T) 和 `overlap_size` (O) 时，请遵循以下物理规律：
+
+#### 效率区间表
+
+| 区间 | 状态 | 描述 |
+|------|------|------|
+| **T ≤ 2×O** | 🔴 **死循环区** | 切分后的片段长度 ≥ 原长度，导致无限递归死循环。系统将强制拦截。 |
+| **2×O < T < 2×O + 10** | 🟠 **低效区** | 二分法能工作，但每次切分只减少少量字符，浪费 API 请求，不如直接微观扫描。 |
+| **T ≥ 2×O + 10** | 🟢 **高效区（推荐）** | 二分法效率最高，能以最少请求数快速定位敏感区域。 |
+
+#### 最佳实践示例
+
+```
+Overlap = 12 → Threshold 设为 34 (2×12+10)  ✓ 推荐
+Overlap = 15 → Threshold 设为 40 (2×15+10)  ✓ 推荐
+Overlap = 10 → Threshold 设为 30 (2×10+10)  ✓ 推荐
+
+危险配置示例：
+Overlap = 15 → Threshold 设为 25 (< 2×15)   ✗ 死循环
+Overlap = 15 → Threshold 设为 30 (2×15)     ✗ 死循环
+Overlap = 12 → Threshold 设为 32 (2×12+8)   ⚠️ 低效
+```
+
+#### 计算公式
+
+```
+推荐值：threshold = (overlap_size × 2) + 10
+
+示例计算（overlap_size = 15）：
+- 推荐值：15 × 2 + 10 = 40
+- 最小安全值：15 × 2 + 1 = 31（但不推荐，会进入低效区）
+- 高效值：15 × 2 + 10 = 40（黄金点）
+
+示例计算（overlap_size = 12）：
+- 推荐值：12 × 2 + 10 = 34
+- 最小安全值：12 × 2 + 1 = 25（但不推荐，会进入低效区）
+- 高效值：12 × 2 + 10 = 34（黄金点）
+```
+
+### 其他参数调优
 
 - **问题 1：扫描速度慢**
   - 调高 `concurrency` (e.g., 30)，调低 `timeout_seconds` (e.g., 15)，适当增大 `min_granularity` (e.g., 3)。
@@ -327,3 +378,5 @@ algorithm_switch_threshold > 2 × overlap_size
   - 提高 `overlap_size`，确保使用 `hybrid` 模式，并保持 `min_granularity = 1`。
 - **Q4：如何在高延迟网络下稳定运行？**
   - 提高 `timeout_seconds` 至 40-60，并降低 `concurrency` 至 1-10。
+- **Q5：修改 overlap_size 后，algorithm_switch_threshold 应该如何调整？**
+  - 使用公式：`threshold = (overlap_size × 2) + 10`。例如 overlap=12 时，设为 34；overlap=15 时，设为 40。

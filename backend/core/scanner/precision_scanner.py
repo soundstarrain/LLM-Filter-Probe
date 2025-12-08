@@ -89,6 +89,15 @@ class PrecisionScanner:
         Returns:
             敏感词段列表
         """
+        # ========== 入口卫语句：检查输入文本是否真的被拦截 ==========
+        is_blocked, _ = await probe_func(text)
+        if not is_blocked:
+            logger.warning(
+                f"[{self.session_id}] [Precision] 收到 SAFE 文本 (长度={len(text)})。跳过扫描。"
+                f"上下文: {text[:10]}..."
+            )
+            return []  # 重点：返回空列表，不要返回 None，防止上层 extend() 报错
+        
         results: List[SensitiveSegment] = []
         current_text = text
         current_offset = 0  # 相对于 text 的偏移
@@ -352,16 +361,17 @@ class PrecisionScanner:
         Returns:
             最小被阻断的子串，或 None 如果未找到
         """
-        n = len(text)
-        if n == 0:
-            return None
-
-        # 先确认整体确为 Blocked
+        # ========== 入口卫语句：检查输入文本是否真的被拦截 ==========
         is_blocked, _ = await probe_func(text)
         if not is_blocked:
             logger.warning(
-                f"[{self.session_id}] [最小子串搜索] 输入文本本身是 Safe"
+                f"[{self.session_id}] [最小子串搜索] 收到 SAFE 文本 (长度={len(text)})。跳过搜索。"
+                f"上下文: {text[:10]}..."
             )
+            return None
+        
+        n = len(text)
+        if n == 0:
             return None
 
         # 从最短窗口开始

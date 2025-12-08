@@ -111,14 +111,21 @@ DEFAULT_OVERLAP_SIZE = getattr(_defaults, 'overlap_size', None) if getattr(_defa
 DEFAULT_ALGORITHM_SWITCH_THRESHOLD = _algorithm_config.get("algorithm_switch_threshold", 35)
 """
 算法切换阈值（字符数）。
-当文本长度小于或等于此值时，二分查找将停止，并将任务交接给微观的"剥洋葱"式精确定位算法。
-默认值 35 是一个基于经验的平衡点：
-- 对于更长的文本，二分查找能快速缩小范围，效率高。
-- 对于短于 35 的文本，二分查找的优势不再明显，直接进行精确定位的成本更低、效率更高。
+当文本长度小于或等于此值时，二分查找将停止，并将任务交接给微观的精确定位算法。
+默认值 35 是基于物理模型的平衡点（overlap=12 时，35 = 12×2 + 10）。
+
+【物理模型】
+推荐公式：Threshold = (2 × Overlap) + 10
+- 例如：overlap=12 时，threshold=34；overlap=15 时，threshold=40
 
 【重要】此参数与 overlap_size 有强依赖关系：
-必须满足 algorithm_switch_threshold > 2 * overlap_size
-否则会导致无限递归（死循环）。
+必须满足 algorithm_switch_threshold > 2 * overlap_size（防止死循环）
+强烈建议设置为 (overlap_size × 2) + 10，以获得最佳 API 调用效率。
+
+【效率区间说明】
+- 死循环区（≤ 2×Overlap）：会导致无限递归，系统强制拦截
+- 低效区（2×Overlap < Threshold < 2×Overlap + 10）：二分法能工作但效率低
+- 高效区（≥ 2×Overlap + 10）：二分法效率最高，推荐此区间
 """
 
 # 为了向后兼容，保留这两个别名

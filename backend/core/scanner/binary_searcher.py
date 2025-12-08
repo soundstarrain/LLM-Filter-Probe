@@ -90,12 +90,24 @@ class BinarySearcher:
             DEFAULT_ALGORITHM_SWITCH_THRESHOLD
         )
         
+        # 计算效率安全因子（加法缓冲区模型）
+        # 推荐公式：threshold = (overlap_size × 2) + 10
+        recommended_threshold = self.overlap_size * 2 + 10
+        if self.algorithm_switch_threshold >= recommended_threshold:
+            ratio_status = "✓ 高效"
+        elif self.algorithm_switch_threshold > self.overlap_size * 2:
+            ratio_status = "⚠️ 低效"
+        else:
+            ratio_status = "🔴 危险（死循环）"
+        
         logger.info(
             f"[{self.session_id}] [BinarySearcher] 已初始化 | "
             f"算法模式={self.algorithm_mode} | "
             f"算法切换阈值={self.algorithm_switch_threshold} | "
-            f"min_granularity={self.min_granularity} | "
-            f"overlap_size={self.overlap_size}"
+            f"重叠大小={self.overlap_size} | "
+            f"推荐值={recommended_threshold} | "
+            f"状态={ratio_status} | "
+            f"min_granularity={self.min_granularity}"
         )
 
     async def search(self, text: str, base_pos: int = 0) -> List[SensitiveSegment]:
@@ -165,9 +177,15 @@ class BinarySearcher:
         self._current_block_reason = block_reason
 
         if self.algorithm_mode == "hybrid" and text_len <= self.algorithm_switch_threshold:
+            # [效率安全因子检查]
+            # 物理模型：Threshold = (2 × Overlap) + Buffer
+            # 推荐值：Buffer = 10，即 Threshold = (2 × Overlap) + 10
+            # 防护：Threshold 必须 > 2 × Overlap（防止死循环）
+            # 当前配置：Threshold={self.algorithm_switch_threshold}, Overlap={self.overlap_size}, 推荐={recommended_threshold}
             logger.info(
                 f"[{self.session_id}] [Macro→Micro] 触发智能交接 | "
                 f"深度:{depth} | 长度:{text_len} | 阈值:{self.algorithm_switch_threshold} | "
+                f"重叠:{self.overlap_size} | 比率:{self.algorithm_switch_threshold / self.overlap_size:.2f}x | "
                 f"[Precision] 开始精细扫描..."
             )
             
