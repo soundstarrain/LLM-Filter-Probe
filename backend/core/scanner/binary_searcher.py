@@ -16,7 +16,7 @@ from typing import List, Optional, TYPE_CHECKING
 from ..engine import ProbeEngine, ScanStatus
 from .event_emitter import ScanEventEmitter
 from .precision_scanner import PrecisionScanner, SensitiveSegment as PrecisionScannerSegment
-from ..constants import MICRO_SCAN_THRESHOLD
+from ..constants import MICRO_SCAN_THRESHOLD, DEFAULT_ALGORITHM_SWITCH_THRESHOLD
 from ..event_bus import get_event_bus, EventTypes
 
 if TYPE_CHECKING:
@@ -84,10 +84,16 @@ class BinarySearcher:
         self.enable_middle_chunk_probe = self.algorithm_config.get("enable_middle_chunk_probe", True)
         self.middle_chunk_overlap_factor = self.algorithm_config.get("middle_chunk_overlap_factor", 1.0)
         
+        # 从算法配置中获取切换阈值
+        self.algorithm_switch_threshold = self.algorithm_config.get(
+            "algorithm_switch_threshold", 
+            DEFAULT_ALGORITHM_SWITCH_THRESHOLD
+        )
+        
         logger.info(
             f"[{self.session_id}] [BinarySearcher] 已初始化 | "
             f"算法模式={self.algorithm_mode} | "
-            f"精细扫描阈值={MICRO_SCAN_THRESHOLD} | "
+            f"算法切换阈值={self.algorithm_switch_threshold} | "
             f"min_granularity={self.min_granularity} | "
             f"overlap_size={self.overlap_size}"
         )
@@ -158,10 +164,10 @@ class BinarySearcher:
         
         self._current_block_reason = block_reason
 
-        if self.algorithm_mode == "hybrid" and text_len <= MICRO_SCAN_THRESHOLD:
+        if self.algorithm_mode == "hybrid" and text_len <= self.algorithm_switch_threshold:
             logger.info(
                 f"[{self.session_id}] [Macro→Micro] 触发智能交接 | "
-                f"深度:{depth} | 长度:{text_len} | 阈值:{MICRO_SCAN_THRESHOLD} | "
+                f"深度:{depth} | 长度:{text_len} | 阈值:{self.algorithm_switch_threshold} | "
                 f"[Precision] 开始精细扫描..."
             )
             

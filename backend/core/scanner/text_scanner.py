@@ -15,6 +15,7 @@
 import asyncio
 import logging
 import re
+import time
 from typing import List, Optional, Callable, Dict, Any, Set
 
 from ..engine import ProbeEngine, ScanStatus
@@ -70,6 +71,10 @@ class TextScanner:
         self.known_sensitive_words: Set[str] = set()
         self.full_text: str = ""
         self.should_stop = False
+        
+        # 扫描时间记录
+        self.scan_start_time: Optional[float] = None
+        self.scan_end_time: Optional[float] = None
 
         logger.info(f"[{self.session_id}] TextScanner initialized.")
 
@@ -192,6 +197,13 @@ class TextScanner:
             algorithm_config = settings.get("algorithm", {})
             if not algorithm_config:
                 algorithm_config = DEFAULT_ALGORITHM_CONFIG.copy()
+            # 将顶层的 algorithm_switch_threshold 合并到 algorithm 配置，支持前端覆盖
+            if "algorithm_switch_threshold" in settings:
+                try:
+                    th = int(settings.get("algorithm_switch_threshold"))
+                    algorithm_config["algorithm_switch_threshold"] = th
+                except Exception:
+                    pass
 
             logger.info(
                 f"[{self.session_id}] 动态加载扫描配置 | "
@@ -257,6 +269,9 @@ class TextScanner:
         """
         if not text:
             return []
+
+        # 记录扫描开始时间
+        self.scan_start_time = time.time()
 
         segment_size = await self._load_dynamic_config()
 
@@ -379,21 +394,45 @@ class TextScanner:
             f"总片段数: {self.sensitive_count}"
         )
 
+        # 记录扫描结束时间并计算总耗时
+        self.scan_end_time = time.time()
+        scan_duration = self.scan_end_time - self.scan_start_time
+        duration_str = self._format_duration(scan_duration)
+
         stats = self.get_statistics()
         await self.emitter.scan_completed(
             total_sensitive_found=stats['sensitive_count'],
             total_requests=stats['request_count'],
             unknown_codes=list(self.engine.unknown_status_codes),
-            results=grouped_results  # 修正字段名
+            results=grouped_results,
+            duration_text=duration_str,
+            duration_seconds=scan_duration
         )
 
         logger.info(
             f"[{self.session_id}] 扫描完成 | "
             f"发现: {self.sensitive_count} | 总请求: {self.engine.request_count} | "
-            f"分组关键词: {len(grouped_results)}"
+            f"分组关键词: {len(grouped_results)} | 总耗时: {duration_str}"
         )
 
         return deduplicated_segments
+
+    def _format_duration(self, seconds: float) -> str:
+        """
+        将秒数格式化为可读的时间字符串
+        
+        Args:
+            seconds: 秒数
+            
+        Returns:
+            格式化后的时间字符串，例如 "2m 57s" 或 "3.45s"
+        """
+        if seconds < 60:
+            return f"{seconds:.2f}s"
+        else:
+            minutes = int(seconds // 60)
+            secs = seconds % 60
+            return f"{minutes}m {secs:.0f}s"
 
     async def _check_and_report_unknown_codes(self):
         """检查并报告新的未知状态码（仅当首次发现时）"""

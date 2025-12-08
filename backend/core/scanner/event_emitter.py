@@ -207,25 +207,40 @@ class ScanEventEmitter:
         )
         await self.log_message("warning", message)
 
-    async def scan_completed(self, total_sensitive_found: int, total_requests: int, unknown_codes: list, results: Optional[Dict[str, list]] = None):
+    async def scan_completed(self, total_sensitive_found: int, total_requests: int, unknown_codes: list, results: Optional[Dict[str, list]] = None, duration_text: str = None, duration_seconds: float = None):
         """发送扫描完成事件"""
+        complete_data = {
+            "sensitive_count": total_sensitive_found,
+            "total_requests": total_requests,
+            "unknown_status_codes": unknown_codes,
+            "results": results or {},
+        }
+        if duration_text is not None:
+            complete_data["duration_text"] = duration_text
+        if duration_seconds is not None:
+            complete_data["duration_seconds"] = round(duration_seconds, 2)
+
         await self._emit({
             "event": "scan_complete",
-            "data": {
-                "sensitive_count": total_sensitive_found,
-                "total_requests": total_requests,
-                "unknown_status_codes": unknown_codes,
-                "results": results or {},
-            }
+            "data": complete_data
         })
+        
         # 计算本次扫描的总记录数（所有敏感词的位置总数）
         total_records = 0
         if results:
             for keyword, locations in results.items():
                 total_records += len(locations) if isinstance(locations, list) else 0
         
-        # 发送扫描完成日志消息，输出本次扫描的总记录数
-        await self.log_message("success", f"扫描完成 | 共发现 {total_sensitive_found} 处敏感内容 | 本次扫描总请求数: {total_requests}")
+        # 发送扫描完成日志消息
+        log_parts = [
+            f"共发现 {total_sensitive_found} 处敏感内容",
+            f"本次扫描总请求数: {total_requests}"
+        ]
+        if duration_text:
+            log_parts.append(f"总耗时: {duration_text}")
+        
+        log_message_text = " | ".join(log_parts)
+        await self.log_message("success", f"扫描完成 | {log_message_text}")
 
         if unknown_codes:
             codes_str = ", ".join(map(str, sorted(unknown_codes)))

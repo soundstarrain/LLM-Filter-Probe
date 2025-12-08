@@ -31,6 +31,7 @@ class SettingsConfig(BaseModel):
     min_granularity: int = 1
     overlap_size: int = 12
     algorithm_mode: str = "hybrid"
+    algorithm_switch_threshold: int = 35
     algorithm: Dict[str, Any] = Field(default_factory=dict)
 
 class PresetsConfig(BaseModel):

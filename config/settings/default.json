@@ -10,5 +10,6 @@
   "jitter": 0.5,
   "min_granularity": 1,
   "overlap_size": 12,
-  "algorithm_mode": "hybrid"
+  "algorithm_mode": "hybrid",
+  "algorithm_switch_threshold": 35
 }

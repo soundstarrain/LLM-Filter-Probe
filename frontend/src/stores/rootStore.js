@@ -1,9 +1,9 @@
 import { defineStore } from 'pinia';
 import { reactive, computed, watch } from 'vue';
-import { apiGet, apiPost } from '../utils/apiClient';
-import { loadConfig, saveConfig } from '../utils/configLoader';
+import { apiPost } from '../utils/apiClient';
+import { loadConfig } from '../utils/configLoader';
 import { API_ENDPOINTS } from '../constants/api';
-import { CACHE_CONFIG, MONITOR_CONFIG, LOG_CONFIG } from '../constants/config';
+import { MONITOR_CONFIG, LOG_CONFIG } from '../constants/config';
 import { saveLogs, loadLogs } from '../utils/logManager';
 
 export const useRootStore = defineStore('root', () => {
@@ -37,6 +37,7 @@ export const useRootStore = defineStore('root', () => {
     min_granularity: 1,
     overlap_size: 12,
     algorithm_mode: 'hybrid',
+    algorithm_switch_threshold: 35,
     preset: 'relay',
   });
 
@@ -240,6 +241,7 @@ export const useRootStore = defineStore('root', () => {
         min_granularity: settings.min_granularity ?? settingsConfig.min_granularity,
         overlap_size: settings.overlap_size ?? settingsConfig.overlap_size,
         algorithm_mode: settings.algorithm_mode ?? settingsConfig.algorithm_mode,
+        algorithm_switch_threshold: settings.algorithm_switch_threshold ?? settingsConfig.algorithm_switch_threshold,
         preset: settings.preset ?? settingsConfig.preset,
       };
 

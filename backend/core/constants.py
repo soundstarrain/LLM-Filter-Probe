@@ -11,6 +11,7 @@ from .config_schema import ConfigSchema
 # ============ 定位并加载配置文件 ============
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEFAULT_CONFIG_PATH = BASE_DIR / "config" / "settings" / "default.json"
+ALGORITHM_CONFIG_PATH = BASE_DIR / "config" / "algorithm" / "default.json"
 SYSTEM_CONSTANTS_PATH = BASE_DIR / "config" / "system" / "constants.json"
 SYSTEM_HTTP_PATH = BASE_DIR / "config" / "system" / "http.json"
 SYSTEM_CACHE_PATH = BASE_DIR / "config" / "system" / "cache.json"
@@ -51,6 +52,7 @@ def load_defaults():
 
 # 初始化全局默认值对象
 _defaults = load_defaults()
+_algorithm_config = load_json_file(ALGORITHM_CONFIG_PATH)
 _system_constants = load_json_file(SYSTEM_CONSTANTS_PATH)
 _system_http = load_json_file(SYSTEM_HTTP_PATH)
 _system_cache = load_json_file(SYSTEM_CACHE_PATH)
@@ -98,24 +100,30 @@ DEFAULT_JITTER = getattr(_defaults, 'jitter', None) if getattr(_defaults, 'jitte
 
 # ============ 算法配置常量 ============
 # 注意：这些值从 config/settings/default.json 加载，不应该硬编码
-DEFAULT_MIN_GRANULARITY = getattr(_defaults, 'min_granularity', None) or 30
+DEFAULT_MIN_GRANULARITY = getattr(_defaults, 'min_granularity', None) or 1
 """默认二分查找最小粒度（字符数）"""
 
 DEFAULT_OVERLAP_SIZE = getattr(_defaults, 'overlap_size', None) if getattr(_defaults, 'overlap_size', None) is not None else 10
 """默认重叠分割大小（字符数）"""
 
-# 注意：这些阈值是系统级常数，不应该从配置文件加载
-HYBRID_HANDOVER_THRESHOLD = 50
+# ============ 算法切换阈值（从 config/algorithm/default.json 加载） ============
+# 注意：这个值现在从配置文件加载，不再硬编码
+DEFAULT_ALGORITHM_SWITCH_THRESHOLD = _algorithm_config.get("algorithm_switch_threshold", 35)
 """
-混合算法的交接阈值（字符数）。
-当文本长度小于或等于此值时，二分查找将停止，并将任务交接给微观的“剥洋葱”式精确定位算法。
-选择 50 是一个基于经验的平衡点：
+算法切换阈值（字符数）。
+当文本长度小于或等于此值时，二分查找将停止，并将任务交接给微观的"剥洋葱"式精确定位算法。
+默认值 35 是一个基于经验的平衡点：
 - 对于更长的文本，二分查找能快速缩小范围，效率高。
-- 对于短于 50 的文本，二分查找的优势不再明显，直接进行精确定位的成本更低、效率更高。
+- 对于短于 35 的文本，二分查找的优势不再明显，直接进行精确定位的成本更低、效率更高。
+
+【重要】此参数与 overlap_size 有强依赖关系：
+必须满足 algorithm_switch_threshold > 2 * overlap_size
+否则会导致无限递归（死循环）。
 """
 
-MICRO_SCAN_THRESHOLD = 50
-"""精细扫描阈值：当文本长度 <= 此值时，使用双向挤压算法进行精确定位（字符数）"""
+# 为了向后兼容，保留这两个别名
+HYBRID_HANDOVER_THRESHOLD = DEFAULT_ALGORITHM_SWITCH_THRESHOLD
+MICRO_SCAN_THRESHOLD = DEFAULT_ALGORITHM_SWITCH_THRESHOLD
 
 # ============ 规则配置常量 ============
 # 注意：这些值从 config/settings/default.json 加载，不应该硬编码
@@ -253,9 +261,16 @@ MIN_MAX_RETRIES = 1
 MAX_MAX_RETRIES = 10
 """最大重试次数"""
 
+MIN_ALGORITHM_SWITCH_THRESHOLD = 20
+"""最小算法切换阈值（字符数）"""
+
+MAX_ALGORITHM_SWITCH_THRESHOLD = 100
+"""最大算法切换阈值（字符数）"""
+
 # ============ 系统级算法配置常量 ============
 # 注意：这些值从 config/algorithm/default.json 加载
 DEFAULT_ALGORITHM_CONFIG = {
+    "algorithm_switch_threshold": DEFAULT_ALGORITHM_SWITCH_THRESHOLD,
     "enable_triple_probe": True,
     "max_recursion_depth": 30,
     "enable_deduplication": True,

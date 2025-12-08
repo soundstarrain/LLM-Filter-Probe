@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Callable
 
 from ..engine import ProbeEngine, ScanStatus
-from ..constants import MICRO_SCAN_THRESHOLD
+from ..constants import MICRO_SCAN_THRESHOLD, DEFAULT_ALGORITHM_SWITCH_THRESHOLD
 from .event_emitter import ScanEventEmitter
 from ..event_bus import get_event_bus, EventTypes
 
@@ -306,11 +306,17 @@ class HybridScanStrategy(ScanStrategy):
         overlap_size: int = 50,
         should_stop_flag: Optional[object] = None,
         algorithm_config: Optional[dict] = None,
-        threshold: int = MICRO_SCAN_THRESHOLD,
+        threshold: int = None,
         session_id: str = ""
     ):
         self.engine = engine
         self.emitter = emitter
+        # 如果没有提供阈值，从算法配置中获取，否则使用默认值
+        if threshold is None:
+            if algorithm_config:
+                threshold = algorithm_config.get("algorithm_switch_threshold", DEFAULT_ALGORITHM_SWITCH_THRESHOLD)
+            else:
+                threshold = DEFAULT_ALGORITHM_SWITCH_THRESHOLD
         self.threshold = threshold
         self.session_id = session_id or "default"
         
@@ -339,6 +345,8 @@ class HybridScanStrategy(ScanStrategy):
         else:
             logger.info(f"[{self.session_id}] 使用二分法查找策略 (长度: {len(text)} > {self.threshold})")
             return await self.macro_strategy.scan(text, base_pos)
+
+
 
 
 

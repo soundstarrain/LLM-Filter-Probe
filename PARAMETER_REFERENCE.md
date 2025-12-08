@@ -43,15 +43,14 @@ config/
 | min_granularity | 1 | 1-10 | 二分最小粒度（字符） |
 | overlap_size | 12 | 5-50 | 分块重叠大小（字符） |
 | algorithm_mode | hybrid | hybrid/binary | 扫描算法模式 |
-| token_limit | 20 | - | 单请求 token 上限（防过大请求） |
-| jitter | 0.5 | - | 重试抖动（秒） |
-| delimiter | "\n" | - | 文本分割符 |
+| algorithm_switch_threshold | 35 | 20-100 | 宏观二分转微观扫描的切换阈值（字符） |
 | use_system_proxy | true | true/false | 是否使用系统代理 |
 
 ### 算法参数（algorithm/default.json）
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
+| algorithm_switch_threshold | 35 | 宏观二分转微观扫描的切换阈值（字符） |
 | enable_triple_probe | true | 启用三路探测，确保切割判断的完备性 |
 | max_recursion_depth | 30 | 二分递归最大层数 |
 | enable_deduplication | true | 启用结果去重 |
@@ -103,19 +102,16 @@ config/
 - 可选："hybrid"（推荐）| "binary"
 - 说明：hybrid 基于长度二分与双向压缩算法精确间切换
 
-### 9) token_limit（token 上限）
-- 类型：Integer，默认 20
-- 说明：限制单请求 token 大小，避免过大上下文导致失败或额度浪费
+### 9) algorithm_switch_threshold（算法切换阈值）【新增】
+- 类型：Integer，范围 20-100，默认 35
+- 说明：宏观二分转微观扫描的临界点。当文本片段长度小于或等于此值时，停止二分查找，启动微观精确扫描。
+- **【重要】强依赖关系**：必须满足 `algorithm_switch_threshold > 2 × overlap_size`，否则会导致无限递归（死循环）。
+- 建议值：
+  - 30-40：推荐值，平衡二分和精确定位的效率（默认 35）
+  - 20-30：更多使用精确定位，精度更高但速度较慢
+  - 40-60：更多使用二分查找，速度更快但可能精度略低
 
-### 10) jitter（重试抖动）
-- 类型：Float，默认 0.5
-- 说明：重试前随机等待，避免集中重试
-
-### 11) delimiter（分割符）
-- 类型：String，默认 "\n"
-- 说明：文本分割符，对算法影响较小；可按语种选择句号/逗号等
-
-### 12) use_system_proxy（系统代理）
+### 10) use_system_proxy（系统代理）
 - 类型：Boolean，默认 true
 - 说明：是否使用系统代理配置
 
@@ -158,8 +154,8 @@ config/
 ## 算法原理与参数关联
 
 ### 核心思路
-- **二分（Binary Search）**：当候选文本较长（例如 > 45 字）时，通过递归二分快速缩小“可疑区间”。
-- **双向挤压（Precision Scan）**：当区间足够短（≤ 45 字）时，使用双向挤压法，逐字收缩，直至最小可疑片段收敛到词汇级。
+- **二分（Binary Search）**：当候选文本较长（例如 > 35 字）时，通过递归二分快速缩小“可疑区间”。
+- **双向挤压（Precision Scan）**：当区间足够短（≤ 35 字）时，使用双向挤压法，逐字收缩，直至最小可疑片段收敛到词汇级。
 - **三路探测（Tri-Probe）**：在切分判断时，对“完整、前半、后半”部分进行探测，旨在避免因切割位置不当（例如在敏感词中间切开）而导致的漏判，确保判断的完备性。
 - **动态掩码（Dynamic Masking）**：发现命中后进行全局掩码，随后的请求不再重复触发相同拦截，提高总体吞吐。
 
@@ -167,7 +163,7 @@ config/
 
 ```mermaid
 graph TD
-    A[开始: 接收待检测文本块] --> B{文本块长度 > 45字?};
+    A[开始: 接收待检测文本块] --> B{文本块长度 > 35字?};
     B -- 是 --> C[二分查找];
     B -- 否 --> D[微观精确定位];
 
@@ -209,13 +205,13 @@ graph TD
 
 ```pseudocode
 function hybrid_scan(text):
-  if length(text) > 45:
+  if length(text) > algorithm_switch_threshold:
     return binary_search_scan(text, depth=0)
   else:
     return precision_scan(text)
 
 function binary_search_scan(text, depth):
-  if depth >= max_recursion_depth or length(text) <= 45:
+  if depth >= max_recursion_depth or length(text) <= algorithm_switch_threshold:
     return precision_scan(text)
 
   // 三路探测确保切割的完备性
@@ -240,11 +236,36 @@ function precision_scan(text):
 ```
 
 ### 关键参数与效果
-- **min_granularity**：下限越小，越接近词汇级；建议保持 1 以获得最高精度。
+- **algorithm_switch_threshold**：二分与精确定位的切换点。越小越精确但速度慢，越大速度快但可能精度略低。默认 35，推荐 30-50。
+  - **【重要】必须满足：threshold > 2 × overlap_size，否则导致死循环**
 - **overlap_size**：决定跨块边界是否会遗漏命中。若最长敏感词为 L，建议 overlap ≥ 2×L，以覆盖边界两侧搜索空间。
 - **max_recursion_depth**：决定二分算法能否在有限步内收敛到短区间；文本更长或阈值更苛刻时可上调。
 - **algorithm_mode**：使用 `hybrid` 可自动在 Binary/Precision 之间切换，通常兼顾速度与精度。
 - **concurrency/timeout/max_retries**：影响吞吐与稳定性；在限流或高延迟环境下降低并发、提高超时并减少重试峰值更稳妥。
+
+### 【重要】死循环防护公式
+
+**二分切分后的片段长度计算**：
+```
+新片段长度 ≈ (原片段长度 / 2) + overlap_size
+```
+
+**死循环条件**（必须避免）：
+```
+新片段长度 ≥ 原片段长度
+即：(len / 2) + overlap_size ≥ len
+即：overlap_size ≥ len / 2
+```
+
+**安全条件**（必须满足）：
+```
+algorithm_switch_threshold > 2 × overlap_size
+```
+
+**示例**：
+- ✓ 安全：threshold=40, overlap=12 → 40 > 24
+- ✗ 危险：threshold=25, overlap=15 → 25 ≤ 30（会导致死循环）
+- ✓ 安全：threshold=50, overlap=15 → 50 > 30
 
 ---
 

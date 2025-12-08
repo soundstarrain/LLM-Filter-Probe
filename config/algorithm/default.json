@@ -1,4 +1,5 @@
 {
+  "algorithm_switch_threshold": 35,
   "enable_triple_probe": true,
   "max_recursion_depth": 30,
   "enable_deduplication": true,
