@@ -230,6 +230,16 @@ function cleanupSession() {
 // --- 组件挂载与卸载 ---
 onMounted(async () => {
   try {
+    // 【新增】检查是否是页面刷新，如果是则清空日志
+    const isPageRefresh = performance.navigation.type === 1 || 
+                          (window.performance && window.performance.getEntriesByType('navigation')[0]?.type === 'reload');
+    
+    if (isPageRefresh && rootStore.logs.autoClearOnRefresh) {
+      console.log('🔄 检测到页面刷新，正在清空日志...');
+      rootStore.clearLogs();
+      rootStore.addLog('检测到浏览器刷新，自动清空历史日志。', 'info');
+    }
+
     // 第一步：检查后端服务是否健康
     const isHealthy = await checkBackendHealth();
     if (!isHealthy) {
@@ -260,6 +270,11 @@ onMounted(async () => {
     console.error('❌ [App] 应用初始化失败:', error);
     rootStore.addLog(`应用初始化失败: ${error.message}`, 'error');
   }
+});
+
+// 【新增】监听页面卸载事件，标记页面正在刷新
+window.addEventListener('beforeunload', () => {
+  rootStore.setPageRefreshing(true);
 });
 
 // 在组件卸载时清理会话

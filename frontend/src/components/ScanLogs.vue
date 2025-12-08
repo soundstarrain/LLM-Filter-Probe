@@ -5,7 +5,6 @@
       <div class="header-actions">
         <span class="log-count">
           {{ logs.messages.length }} 条
-          <span v-if="logStats" class="log-stats-details">{{ logStats }}</span>
         </span>
         <span class="auto-scroll-indicator">
           <span class="pulse-dot"></span>
@@ -23,8 +22,9 @@
         <n-button
           v-if="logs.messages.length > 0"
           size="small"
-          type="tertiary"
-          @click="rootStore.clearLogs"
+          type="error"
+          ghost
+          @click="handleClearLogs"
         >
           清空日志
         </n-button>
@@ -79,11 +79,11 @@
  * - 显示日志统计信息（如错误、警告数量）。
  * - 为特定类型的日志（如算法阶段、成功、错误）添加视觉提示。
  */
-import { ref, watch, nextTick, onMounted, computed } from 'vue';
+import { ref, watch, nextTick, onMounted } from 'vue';
 import { storeToRefs } from 'pinia';
-import { NButton, NDropdown } from 'naive-ui';
+import { NButton } from 'naive-ui';
 import { useRootStore } from '../stores/rootStore';
-import { exportLogs, getLogStats } from '../utils/logManager';
+import { exportLogs } from '../utils/logManager';
 
 const rootStore = useRootStore();
 const { logs } = storeToRefs(rootStore);
@@ -91,21 +91,6 @@ const { logs } = storeToRefs(rootStore);
 const consoleRef = ref(null);
 const containerRef = ref(null);
 
-/**
- * 计算日志统计信息，用于在 UI 上显示错误、警告和成功日志的数量。
- * @returns {string|null} 格式化的统计字符串，例如 "(2 错误, 1 警告)"，如果没有可统计的日志则返回 null。
- */
-const logStats = computed(() => {
-  if (!logs.value.messages || logs.value.messages.length === 0) {
-    return null;
-  }
-  const stats = getLogStats(logs.value.messages);
-  const parts = [];
-  if (stats.byLevel.error) parts.push(`${stats.byLevel.error} 错误`);
-  if (stats.byLevel.warning) parts.push(`${stats.byLevel.warning} 警告`);
-  if (stats.byLevel.success) parts.push(`${stats.byLevel.success} 成功`);
-  return parts.length > 0 ? `(${parts.join(', ')})` : '';
-});
 
 /**
  * 处理日志导出下拉菜单的选择事件。
@@ -118,6 +103,17 @@ const handleExportSelect = (key) => {
     console.error(`导出日志失败 (格式: ${key}):`, error);
     // 可以在这里添加一个用户通知
   }
+};
+
+/**
+ * 处理清空日志操作
+ * 清空日志后添加一条提示信息
+ */
+const handleClearLogs = () => {
+  const previousCount = logs.value.messages.length;
+  rootStore.clearLogs();
+  rootStore.addLog(`✅ 已清空 ${previousCount} 条日志`, 'success');
+  console.log(`🗑️ 日志已清空 (共 ${previousCount} 条)`);
 };
 
 /**
@@ -236,10 +232,6 @@ onMounted(() => {
   gap: 6px;
 }
 
-.log-stats-details {
-  color: #666;
-  font-weight: 500;
-}
 
 .auto-scroll-indicator {
   font-size: 12px;
@@ -267,6 +259,8 @@ onMounted(() => {
     opacity: 0.5;
   }
 }
+
+
 .console-wrapper {
   flex: 1;
   min-height: 100px;

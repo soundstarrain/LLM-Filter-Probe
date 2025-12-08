@@ -31,7 +31,7 @@
 
     <!-- 预设描述 -->
     <div v-if="presetDescription" class="preset-description">
-      <strong>📋 预设说明：</strong> {{ presetDescription }}
+      <strong>预设说明：</strong> {{ presetDescription }}
     </div>
 
     <!-- 提示信息 -->
@@ -42,7 +42,7 @@
       closable
     >
       <template #icon>
-        <span>ℹ️</span>
+
       </template>
       当前为只读预设。如需编辑参数，请切换到 <strong>"Custom"</strong> 预设。
     </n-alert>

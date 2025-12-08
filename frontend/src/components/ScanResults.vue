@@ -9,6 +9,13 @@
         >
       </div>
       <div class="header-actions">
+        <n-input
+          v-model:value="searchKeyword"
+          type="text"
+          placeholder="搜索敏感词..."
+          clearable
+          style="width: 200px"
+        />
         <n-button
           v-if="totalSensitiveCount > 0"
           size="small"
@@ -19,71 +26,55 @@
           <template #icon> </template>
           导出结果
         </n-button>
-        <n-button
-          v-if="resultKeywords.length > 5"
-          size="small"
-          type="info"
-          @click="showDetailModal = true"
-        >
-          <template #icon> </template>
-          查看全部
-        </n-button>
       </div>
     </div>
 
-    <!-- 快速预览（前5个关键词） -->
-    <div class="preview-section">
+    <!-- 【新增】未知状态码统计和敏感词判断依据 -->
+    <div v-if="unknownStatusCodeCounts && Object.keys(unknownStatusCodeCounts).length > 0" class="stats-section">
+      <div class="stats-header">
+        <h4>⚠️ 未知状态码统计</h4>
+      </div>
+      <div class="stats-content">
+        <div v-for="(count, code) in unknownStatusCodeCounts" :key="code" class="stat-item">
+          <span class="stat-code">{{ code }}</span>
+          <span class="stat-count">出现 {{ count }} 次</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 【新增】敏感词判断依据 -->
+    <div v-if="sensitiveWordEvidence && Object.keys(sensitiveWordEvidence).length > 0" class="evidence-section">
+      <div class="evidence-header">
+        <h4>敏感词判断依据</h4>
+      </div>
+      <div class="evidence-content">
+        <div v-for="(evidence, key) in sensitiveWordEvidence" :key="key" class="evidence-item">
+          <div class="evidence-type" :class="evidence.type">
+            {{ evidence.type === 'keyword' ? '关键词' : '状态码' }}
+          </div>
+          <div class="evidence-value">
+            <span v-if="evidence.type === 'keyword'">{{ evidence.value }}</span>
+            <span v-else>{{ evidence.value }}</span>
+          </div>
+          <div v-if="evidence.context" class="evidence-context">
+            上下文: {{ evidence.context }}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 主表格区域（包含分页） -->
+    <div class="results-section">
       <div class="table-container">
         <n-data-table
-          :columns="previewColumns"
-          :data="displayedResults"
-          :pagination="false"
+          :columns="tableColumns"
+          :data="filteredResults"
+          :pagination="tablePagination"
           size="small"
           striped
         />
       </div>
     </div>
-
-    <!-- 详情弹窗 -->
-    <n-modal
-      v-model:show="showDetailModal"
-      title="完整检测结果"
-      preset="dialog"
-      size="large"
-      :mask-closable="false"
-      style="width: 90%; max-width: 1200px"
-    >
-      <div class="modal-content">
-        <div class="modal-toolbar">
-          <n-input-group>
-            <n-input
-              v-model:value="searchKeyword"
-              type="text"
-              placeholder="搜索敏感词..."
-              clearable
-            />
-          </n-input-group>
-          <span class="modal-count">
-            {{ filteredResults.length }} / {{ resultKeywords.length }} 个关键词
-          </span>
-        </div>
-
-        <div class="modal-table">
-          <n-data-table
-            :columns="modalColumns"
-            :data="pagedResults"
-            :pagination="modalPagination"
-            size="small"
-            striped
-          />
-        </div>
-
-        <div class="modal-footer">
-          <n-button @click="showDetailModal = false">关闭</n-button>
-          <n-button type="primary" @click="exportResults"> 导出全部结果 </n-button>
-        </div>
-      </div>
-    </n-modal>
 
     <div v-if="exportMessage" class="export-message" :class="exportMessageType">
       {{ exportMessage }}
@@ -98,13 +89,12 @@
  *
  * 该组件负责展示扫描结果，包括：
  * - 结果摘要（总数、关键词数）。
- * - 结果的快速预览列表。
- * - 一个包含搜索和分页功能的模态框，用于展示全部结果。
+ * - 完整的结果列表，支持搜索、分页和每页条数选择。
  * - 将结果导出为文本文件的功能。
  */
 import { ref, computed, h, watch } from 'vue';
 import { storeToRefs } from 'pinia';
-import { NButton, NDataTable, NModal, NInput, NInputGroup } from 'naive-ui';
+import { NButton, NDataTable, NInput } from 'naive-ui';
 import { useRootStore } from '../stores/rootStore';
 import DisplayPositions from './DisplayPositions.vue';
 
@@ -114,13 +104,16 @@ const { resultKeywords, totalSensitiveCount } = storeToRefs(rootStore);
 const isExporting = ref(false);
 const exportMessage = ref('');
 const exportMessageType = ref('success');
-const showDetailModal = ref(false);
 const searchKeyword = ref('');
 
+// 【新增】从 store 获取未知状态码统计和敏感词判断依据
+const unknownStatusCodeCounts = computed(() => rootStore.results.unknownStatusCodeCounts || {});
+const sensitiveWordEvidence = computed(() => rootStore.results.sensitiveWordEvidence || {});
+
 // 分页状态（默认每页 10 条）
-const modalPage = ref(1);
-const modalPageSize = ref(10);
-const modalPageSizes = [10, 20, 50, 100];
+const currentPage = ref(1);
+const pageSize = ref(10);
+const pageSizes = [10, 20, 50, 100];
 
 /**
  * 根据关键词列表构建用于数据表的数据。
@@ -136,16 +129,7 @@ const buildTableData = (keywords) => {
 };
 
 /**
- * 计算用于主界面快速预览的扫描结果（最多显示前5个关键词）。
- * @returns {Array<object>} 用于数据表的结果数组。
- */
-const displayedResults = computed(() => {
-  const keywords = resultKeywords.value.slice(0, 5);
-  return buildTableData(keywords);
-});
-
-/**
- * 计算在“完整结果”模态框中显示的、经过搜索过滤的扫描结果。
+ * 计算经过搜索过滤的扫描结果。
  * @returns {Array<object>} 用于数据表的结果数组。
  */
 const filteredResults = computed(() => {
@@ -158,26 +142,23 @@ const filteredResults = computed(() => {
   return buildTableData(filtered);
 });
 
-// 分页后的数据
-const pagedResults = computed(() => {
-  const start = (modalPage.value - 1) * modalPageSize.value;
-  const end = start + modalPageSize.value;
-  return filteredResults.value.slice(start, end);
-});
-
 // 受控分页对象（Naive UI）
-const modalPagination = computed(() => ({
-  page: modalPage.value,
-  pageSize: modalPageSize.value,
-  pageCount: Math.max(1, Math.ceil(filteredResults.value.length / modalPageSize.value) || 1),
+const tablePagination = computed(() => ({
+  page: currentPage.value,
+  pageSize: pageSize.value,
+  pageCount: Math.max(1, Math.ceil(filteredResults.value.length / pageSize.value) || 1),
+  itemCount: filteredResults.value.length,
   showSizePicker: true,
-  pageSizes: modalPageSizes,
+  pageSizes: pageSizes,
+  prefix: (info) => {
+    return `共 ${filteredResults.value.length} 个关键词`;
+  },
   onUpdatePage: (page) => {
-    modalPage.value = page;
+    currentPage.value = page;
   },
   onUpdatePageSize: (size) => {
-    modalPageSize.value = size;
-    modalPage.value = 1; // 切换每页条数时回到第一页
+    pageSize.value = size;
+    currentPage.value = 1; // 切换每页条数时回到第一页
   },
 }));
 
@@ -185,51 +166,18 @@ const modalPagination = computed(() => ({
 watch(
   () => [searchKeyword.value, resultKeywords.value.length],
   () => {
-    modalPage.value = 1;
+    currentPage.value = 1;
   }
 );
 
-// 打开弹窗时重置页码
-watch(
-  () => showDetailModal.value,
-  (val) => {
-    if (val) modalPage.value = 1;
-  }
-);
-
-// 预览列（无全局序号偏移）
-const previewColumns = [
-  { title: '序号', key: 'index', width: 60, render: (_, index) => index + 1 },
-  {
-    title: '敏感词',
-    key: 'keyword',
-    width: 150,
-    ellipsis: { tooltip: true },
-    render: (row) => `"${row.keyword}"`,
-  },
-  {
-    title: '出现次数',
-    key: 'count',
-    width: 100,
-    align: 'center',
-    render: (row) => `${row.count} 次`,
-  },
-  {
-    title: '位置',
-    key: 'locations',
-    ellipsis: { tooltip: false },
-    render: (row) => h(DisplayPositions, { locations: row.locations, truncateAt: 5 }),
-  },
-];
-
-// 弹窗列（带全局序号偏移）
-const modalColumns = [
+// 表格列定义
+const tableColumns = [
   {
     title: '序号',
     key: 'index',
     width: 70,
     align: 'center',
-    render: (_, index) => (modalPage.value - 1) * modalPageSize.value + index + 1,
+    render: (_, index) => (currentPage.value - 1) * pageSize.value + index + 1,
   },
   {
     title: '敏感词',
@@ -328,7 +276,6 @@ const exportResults = async () => {
 </script>
 
 <style scoped>
-/* Styles remain the same */
 .scan-results {
   display: flex;
   flex-direction: column;
@@ -338,6 +285,7 @@ const exportResults = async () => {
   overflow: hidden;
   height: 100%;
 }
+
 .panel-header {
   padding: 16px;
   background: linear-gradient(135deg, #f5f7fa 0%, #f9fafb 100%);
@@ -347,17 +295,20 @@ const exportResults = async () => {
   align-items: center;
   gap: 16px;
 }
+
 .header-left {
   display: flex;
   align-items: center;
   gap: 12px;
 }
+
 .panel-header h3 {
   margin: 0;
   font-size: 16px;
   font-weight: 700;
   color: #1f2937;
 }
+
 .result-badge {
   display: inline-block;
   padding: 4px 12px;
@@ -369,6 +320,7 @@ const exportResults = async () => {
   min-width: 50px;
   text-align: center;
 }
+
 .keyword-badge {
   display: inline-block;
   padding: 4px 12px;
@@ -380,60 +332,29 @@ const exportResults = async () => {
   min-width: 50px;
   text-align: center;
 }
+
 .header-actions {
   display: flex;
   gap: 8px;
   align-items: center;
 }
-.preview-section {
+
+.results-section {
   display: flex;
   flex-direction: column;
   flex: 1;
   overflow: hidden;
 }
+
 .table-container {
   flex: 1;
   overflow: auto;
 }
+
 .table-container :deep(.n-data-table) {
-  width: fit-content;
+  width: 100%;
 }
-.modal-content {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  max-height: 70vh;
-}
-.modal-toolbar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  padding: 12px;
-  background: #f9f9f9;
-  border-radius: 6px;
-}
-.modal-toolbar :deep(.n-input-group) {
-  flex: 1;
-}
-.modal-count {
-  font-size: 12px;
-  color: #999;
-  white-space: nowrap;
-  padding: 0 8px;
-}
-.modal-table {
-  flex: 1;
-  overflow: auto;
-  border: 1px solid #e0e0e0;
-  border-radius: 6px;
-}
-.modal-footer {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-  padding-top: 12px;
-  border-top: 1px solid #e0e0e0;
-}
+
 .export-message {
   padding: 12px 16px;
   font-size: 13px;
@@ -441,38 +362,146 @@ const exportResults = async () => {
   border-top: 1px solid #e0e0e0;
   font-weight: 500;
 }
+
 .export-message.success {
   background-color: #f0fdf4;
   color: #166534;
 }
+
 .export-message.error {
   background-color: #fef2f2;
   color: #991b1b;
 }
+
 .export-message.info {
   background-color: #eff6ff;
   color: #1e40af;
 }
+
+/* 【新增】未知状态码统计样式 */
+.stats-section {
+  padding: 12px 16px;
+  background: #fef3c7;
+  border-bottom: 1px solid #fcd34d;
+}
+
+.stats-header {
+  margin-bottom: 8px;
+}
+
+.stats-header h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #92400e;
+}
+
+.stats-content {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.stat-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: white;
+  border-radius: 4px;
+  border: 1px solid #fcd34d;
+  font-size: 12px;
+}
+
+.stat-code {
+  font-weight: 600;
+  color: #d97706;
+}
+
+.stat-count {
+  color: #78350f;
+}
+
+/* 【新增】敏感词判断依据样式 */
+.evidence-section {
+  padding: 12px 16px;
+  background: #dbeafe;
+  border-bottom: 1px solid #93c5fd;
+}
+
+.evidence-header {
+  margin-bottom: 8px;
+}
+
+.evidence-header h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1e40af;
+}
+
+.evidence-content {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.evidence-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  background: white;
+  border-radius: 4px;
+  border: 1px solid #93c5fd;
+  font-size: 12px;
+}
+
+.evidence-type {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+  width: fit-content;
+}
+
+.evidence-type.keyword {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.evidence-type.status_code {
+  background: #fed7aa;
+  color: #92400e;
+}
+
+.evidence-value {
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.evidence-context {
+  color: #6b7280;
+  font-size: 11px;
+  margin-top: 2px;
+}
+
 @media (max-width: 768px) {
   .panel-header {
     flex-direction: column;
     align-items: flex-start;
   }
+
   .header-actions {
     width: 100%;
-  }
-  .header-actions :deep(.n-button) {
-    flex: 1;
-  }
-  .modal-toolbar {
     flex-direction: column;
   }
-  .modal-toolbar :deep(.n-input-group) {
+
+  .header-actions :deep(.n-input),
+  .header-actions :deep(.n-button) {
     width: 100%;
-  }
-  .modal-count {
-    width: 100%;
-    text-align: right;
   }
 }
 </style>
+
+

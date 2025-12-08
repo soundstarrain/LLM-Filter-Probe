@@ -1,15 +1,28 @@
 <template>
-  <n-tooltip trigger="hover" :show-arrow="true">
+  <n-tooltip trigger="hover" :show-arrow="true" placement="top">
     <template #trigger>
-      <span class="positions-display">{{ displayText }}</span>
+      <div class="positions-display-wrapper">
+        <span class="positions-display">{{ displayText }}</span>
+        <span v-if="locations.length > truncateAt" class="expand-indicator">
+          <svg class="expand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </span>
+      </div>
     </template>
     <div class="positions-tooltip">
-      <div
-        v-for="(loc, index) in locations"
-        :key="`${loc.start}-${loc.end}-${index}`"
-        class="position-item"
-      >
-        {{ loc.start }}-{{ loc.end }}
+      <div class="tooltip-header">
+        <span class="tooltip-title">全部位置 ({{ locations.length }})</span>
+      </div>
+      <div class="tooltip-content">
+        <div
+          v-for="(loc, index) in locations"
+          :key="`${loc.start}-${loc.end}-${index}`"
+          class="position-item"
+        >
+          <span class="position-number">{{ index + 1 }}.</span>
+          <span class="position-range">{{ loc.start }}-{{ loc.end }}</span>
+        </div>
       </div>
     </div>
   </n-tooltip>
@@ -72,37 +85,125 @@ const displayText = computed(() => {
 </script>
 
 <style scoped>
-.positions-display {
-  color: #666;
-  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-  font-size: 12px;
+.positions-display-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   cursor: help;
-  padding: 2px 4px;
-  border-radius: 3px;
-  transition: background-color 0.2s;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.2s ease;
 }
 
-.positions-display:hover {
-  background-color: #f0f0f0;
+.positions-display-wrapper:hover {
+  background-color: #f0f7ff;
+}
+
+.positions-display {
+  color: #0066cc;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-all;
+  flex: 1;
+}
+
+.expand-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: #0066cc;
+  opacity: 0.6;
+  transition: opacity 0.2s ease;
+}
+
+.positions-display-wrapper:hover .expand-indicator {
+  opacity: 1;
+}
+
+.expand-icon {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2;
 }
 
 .positions-tooltip {
-  max-height: 200px;
+  max-height: 300px;
   overflow-y: auto;
-  padding: 8px;
+  padding: 0;
   background: #fff;
-  border-radius: 4px;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  border: 1px solid #e0e0e0;
+  min-width: 200px;
+}
+
+.tooltip-header {
+  padding: 10px 12px;
+  background: #f5f7fa;
+  border-bottom: 1px solid #e0e0e0;
+  border-radius: 6px 6px 0 0;
+  position: sticky;
+  top: 0;
+}
+
+.tooltip-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.tooltip-content {
+  padding: 8px 0;
+  max-height: 260px;
+  overflow-y: auto;
 }
 
 .position-item {
-  padding: 4px 0;
+  padding: 8px 12px;
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
   font-size: 12px;
   color: #333;
-  line-height: 1.5;
+  line-height: 1.6;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  transition: background-color 0.15s ease;
 }
 
-.position-item:not(:last-child) {
-  border-bottom: 1px solid #f0f0f0;
+.position-item:hover {
+  background-color: #f0f7ff;
+}
+
+.position-number {
+  color: #999;
+  min-width: 20px;
+  text-align: right;
+  font-weight: 500;
+}
+
+.position-range {
+  color: #0066cc;
+  font-weight: 600;
+}
+
+/* 滚动条美化 */
+.positions-tooltip::-webkit-scrollbar {
+  width: 6px;
+}
+
+.positions-tooltip::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.positions-tooltip::-webkit-scrollbar-thumb {
+  background: #d0d0d0;
+  border-radius: 3px;
+}
+
+.positions-tooltip::-webkit-scrollbar-thumb:hover {
+  background: #999;
 }
 </style>

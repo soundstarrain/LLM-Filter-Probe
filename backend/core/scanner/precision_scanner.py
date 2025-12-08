@@ -63,7 +63,8 @@ class PrecisionScanner:
             session_id: 会话 ID（用于日志）
         """
         self.session_id = session_id or "default"
-        logger.info(f"[{self.session_id}] [Precision] PrecisionScanner 已初始化")
+        # 【修复】移除此处的初始化日志，避免与 scan_started 中的日志重复
+        # logger.info(f"[{self.session_id}] [Precision] PrecisionScanner 已初始化")
 
     async def scan_precision(
         self,
@@ -117,9 +118,29 @@ class PrecisionScanner:
 
             # ========== 步骤 1：前向扫描 ==========
             # 关键：寻找"第一个"触发拦截的最短前缀
-            trigger_prefix, trigger_prefix_end = await self._find_trigger_prefix(
-                current_text, probe_func
-            )
+            try:
+                trigger_prefix, trigger_prefix_end = await self._find_trigger_prefix(
+                    current_text, probe_func
+                )
+            except Exception as e:
+                # 【修复】网络异常导致前向扫描失败，中断此次迭代
+                logger.error(
+                    f"[{self.session_id}] [Precision] 迭代 {iteration_count}: "
+                    f"前向扫描网络异常: {type(e).__name__}: {str(e)}"
+                )
+                # 使用备用策略：直接返回当前文本作为敏感词
+                if current_text:
+                    result = SensitiveSegment(
+                        text=current_text,
+                        start_pos=base_pos + current_offset,
+                        end_pos=base_pos + current_offset + len(current_text)
+                    )
+                    results.append(result)
+                    logger.warning(
+                        f"[{self.session_id}] [Precision] 备用策略：将整个文本块作为敏感词 | "
+                        f"词汇: '{current_text[:20]}...' | 长度: {len(current_text)}"
+                    )
+                break
 
             if trigger_prefix is None:
                 # 剩余文本安全，扫描完成
@@ -136,9 +157,20 @@ class PrecisionScanner:
 
             # ========== 步骤 2：精确挤压 ==========
             # 只对前缀进行左侧收缩
-            final_word, left_pos, right_pos = await self._precision_squeeze_prefix(
-                trigger_prefix, probe_func
-            )
+            try:
+                final_word, left_pos, right_pos = await self._precision_squeeze_prefix(
+                    trigger_prefix, probe_func
+                )
+            except Exception as e:
+                # 【修复】网络异常导致精确挤压失败，使用备用策略
+                logger.error(
+                    f"[{self.session_id}] [Precision] 迭代 {iteration_count}: "
+                    f"精确挤压网络异常: {type(e).__name__}: {str(e)}"
+                )
+                # 使用备用策略：尝试最小阻断子串搜索
+                final_word = None
+                left_pos = 0
+                right_pos = len(trigger_prefix)
 
             if final_word is None:
                 # 精确挤压失败，使用备用策略
@@ -201,7 +233,11 @@ class PrecisionScanner:
             f"总迭代: {iteration_count} | 敏感词数: {len(results)}"
         )
 
-        return results
+        # ========== 长结果清洗 ==========
+        # 如果结果长度超过 10，尝试在已知敏感词库中"捞"一下
+        cleaned_results = await self._clean_long_results(results, text, base_pos, probe_func)
+
+        return cleaned_results
 
     async def _find_trigger_prefix(
         self,
@@ -214,6 +250,9 @@ class PrecisionScanner:
         这一步至关重要，用来隔离"多目标干扰"。
         通过找到最短的被拦截前缀，我们可以确保后续的挤压操作
         不会被后面的字符干扰。
+
+        【修复】如果 probe 抛出网络异常，绝对不能当作 SAFE 处理。
+        必须重试或中断。
 
         Args:
             text: 待扫描的文本
@@ -228,20 +267,28 @@ class PrecisionScanner:
         # 逐字扫描，找到第一个触发拦截的最短前缀
         for i in range(1, len(text) + 1):
             sub = text[:i]
-            is_blocked, _ = await probe_func(sub)
+            try:
+                is_blocked, _ = await probe_func(sub)
 
-            logger.debug(
-                f"[{self.session_id}] [前向扫描] 步骤 {i}: "
-                f"前缀: '{sub}' | 状态: {'Blocked' if is_blocked else 'Safe'}"
-            )
-
-            if is_blocked:
-                # 找到了第一个触发拦截的前缀
                 logger.debug(
-                    f"[{self.session_id}] [前向扫描] 找到触发前缀 | "
-                    f"前缀: '{sub}' | 长度: {len(sub)}"
+                    f"[{self.session_id}] [前向扫描] 步骤 {i}: "
+                    f"前缀: '{sub}' | 状态: {'Blocked' if is_blocked else 'Safe'}"
                 )
-                return sub, i
+
+                if is_blocked:
+                    # 找到了第一个触发拦截的前缀
+                    logger.debug(
+                        f"[{self.session_id}] [前向扫描] 找到触发前缀 | "
+                        f"前缀: '{sub}' | 长度: {len(sub)}"
+                    )
+                    return sub, i
+            except Exception as e:
+                # 【修复】网络异常不能当作 SAFE 处理
+                logger.error(
+                    f"[{self.session_id}] [前向扫描] 网络异常 (步骤 {i}): {type(e).__name__}: {str(e)}"
+                )
+                # 重新抛出异常，让上层处理
+                raise
 
         # 整个文本都是安全的
         logger.debug(
@@ -264,6 +311,9 @@ class PrecisionScanner:
         - 当删除某个字符后，文本变为 Safe，说明该字符是敏感词的边界
         - 此时应该停止削减，保留该字符
 
+        【修复】如果 probe 抛出网络异常，绝对不能当作 SAFE 处理。
+        必须重试或中断。
+
         Args:
             prefix: 已知被拦截的前缀
             probe_func: 探测函数
@@ -275,7 +325,14 @@ class PrecisionScanner:
             return None, -1, -1
 
         # 预检查：确保前缀确实被拦截
-        is_prefix_blocked, _ = await probe_func(prefix)
+        try:
+            is_prefix_blocked, _ = await probe_func(prefix)
+        except Exception as e:
+            logger.error(
+                f"[{self.session_id}] [精确挤压] 预检查网络异常: {type(e).__name__}: {str(e)}"
+            )
+            raise
+        
         if not is_prefix_blocked:
             logger.warning(
                 f"[{self.session_id}] [精确挤压] 警告：前缀本身是 Safe，"
@@ -289,26 +346,33 @@ class PrecisionScanner:
 
         for j in range(len(prefix) - 1):
             candidate = prefix[j + 1:]  # 去掉前 j+1 个字符
-            is_blocked, _ = await probe_func(candidate)
+            try:
+                is_blocked, _ = await probe_func(candidate)
 
-            logger.debug(
-                f"[{self.session_id}] [精确挤压] 左削减步骤 {j + 1}: "
-                f"候选: '{candidate}' | 状态: {'Blocked' if is_blocked else 'Safe'}"
-            )
-
-            if is_blocked:
-                # 依然被拦截，说明左边的字符是冗余的，继续循环
-                left_pos = j + 1
-            else:
-                # 变安全了，说明去掉的部分包含敏感内容
-                # 此时 j 就是起始索引
-                final_word = prefix[j:]
-                left_pos = j
                 logger.debug(
-                    f"[{self.session_id}] [精确挤压] 左削减完成 | "
-                    f"最终词汇: '{final_word}' | 左边界: {left_pos}"
+                    f"[{self.session_id}] [精确挤压] 左削减步骤 {j + 1}: "
+                    f"候选: '{candidate}' | 状态: {'Blocked' if is_blocked else 'Safe'}"
                 )
-                break
+
+                if is_blocked:
+                    # 依然被拦截，说明左边的字符是冗余的，继续循环
+                    left_pos = j + 1
+                else:
+                    # 变安全了，说明去掉的部分包含敏感内容
+                    # 此时 j 就是起始索引
+                    final_word = prefix[j:]
+                    left_pos = j
+                    logger.debug(
+                        f"[{self.session_id}] [精确挤压] 左削减完成 | "
+                        f"最终词汇: '{final_word}' | 左边界: {left_pos}"
+                    )
+                    break
+            except Exception as e:
+                # 【修复】网络异常不能当作 SAFE 处理
+                logger.error(
+                    f"[{self.session_id}] [精确挤压] 左削减网络异常 (步骤 {j + 1}): {type(e).__name__}: {str(e)}"
+                )
+                raise
         else:
             # 循环完成但未找到 Safe 状态
             # 说明整个前缀都是必要的
@@ -322,7 +386,13 @@ class PrecisionScanner:
         right_pos = len(prefix)
 
         # 最终验证：确保结果确实是 Blocked
-        is_result_blocked, _ = await probe_func(final_word)
+        try:
+            is_result_blocked, _ = await probe_func(final_word)
+        except Exception as e:
+            logger.error(
+                f"[{self.session_id}] [精确挤压] 最终验证网络异常: {type(e).__name__}: {str(e)}"
+            )
+            raise
 
         logger.debug(
             f"[{self.session_id}] [精确挤压] 最终验证 | "
@@ -354,6 +424,9 @@ class PrecisionScanner:
         在较小文本上以从短到长的窗口搜索第一个被阻断的最短子串。
         复杂度 O(n^2)，但 n ≤ 50，可接受。
 
+        【修复】如果 probe 抛出网络异常，绝对不能当作 SAFE 处理。
+        必须重试或中断。
+
         Args:
             text: 待搜索的文本
             probe_func: 探测函数
@@ -362,7 +435,14 @@ class PrecisionScanner:
             最小被阻断的子串，或 None 如果未找到
         """
         # ========== 入口卫语句：检查输入文本是否真的被拦截 ==========
-        is_blocked, _ = await probe_func(text)
+        try:
+            is_blocked, _ = await probe_func(text)
+        except Exception as e:
+            logger.error(
+                f"[{self.session_id}] [最小子串搜索] 入口检查网络异常: {type(e).__name__}: {str(e)}"
+            )
+            raise
+        
         if not is_blocked:
             logger.warning(
                 f"[{self.session_id}] [最小子串搜索] 收到 SAFE 文本 (长度={len(text)})。跳过搜索。"
@@ -378,21 +458,124 @@ class PrecisionScanner:
         for w in range(1, n + 1):
             for s in range(0, n - w + 1):
                 seg = text[s:s + w]
-                blocked, _ = await probe_func(seg)
+                try:
+                    blocked, _ = await probe_func(seg)
 
-                logger.debug(
-                    f"[{self.session_id}] [最小子串搜索] 窗口 {w}, 位置 {s}: "
-                    f"子串: '{seg}' | 状态: {'Blocked' if blocked else 'Safe'}"
-                )
-
-                if blocked:
-                    logger.info(
-                        f"[{self.session_id}] [最小子串搜索] 找到最小被阻断子串 | "
-                        f"子串: '{seg}' | 长度: {len(seg)}"
+                    logger.debug(
+                        f"[{self.session_id}] [最小子串搜索] 窗口 {w}, 位置 {s}: "
+                        f"子串: '{seg}' | 状态: {'Blocked' if blocked else 'Safe'}"
                     )
-                    return seg
+
+                    if blocked:
+                        logger.info(
+                            f"[{self.session_id}] [最小子串搜索] 找到最小被阻断子串 | "
+                            f"子串: '{seg}' | 长度: {len(seg)}"
+                        )
+                        return seg
+                except Exception as e:
+                    # 【修复】网络异常不能当作 SAFE 处理
+                    logger.error(
+                        f"[{self.session_id}] [最小子串搜索] 窗口搜索网络异常 (窗口 {w}, 位置 {s}): {type(e).__name__}: {str(e)}"
+                    )
+                    raise
 
         logger.warning(
             f"[{self.session_id}] [最小子串搜索] 未找到任何被阻断的子串"
         )
         return None
+
+    async def _clean_long_results(
+        self,
+        results: List[SensitiveSegment],
+        original_text: str,
+        base_pos: int,
+        probe_func: Callable
+    ) -> List[SensitiveSegment]:
+        """
+        长结果清洗逻辑 - 改进版
+
+        对于长度超过 10 的结果，尝试在原始文本中找到更精确的敏感词。
+        这是为了解决高并发下 API 超时被误判为 SAFE 导致的长句误报。
+
+        【关键修复】坐标传递必须严格遵循全局坐标原则：
+        - 输入的 seg.start_pos 和 seg.end_pos 都是全局坐标
+        - 输出的坐标也必须是全局坐标
+        - 中间计算不能混用相对坐标和全局坐标
+
+        策略：
+        - 如果结果长度 > 10，尝试在该结果文本中找到最短的被阻断子串
+        - 如果找到，替换为更短的核心词（坐标必须正确转换）
+        - 如果没找到，保留原结果
+
+        【修复】如果网络异常，保留原结果而不是中断整个清洗过程。
+
+        Args:
+            results: 原始扫描结果（坐标为全局坐标）
+            original_text: 原始文本（用于上下文）
+            base_pos: 基础位置
+            probe_func: 探测函数
+
+        Returns:
+            清洗后的结果列表（坐标为全局坐标）
+        """
+        if not results:
+            return results
+
+        cleaned = []
+        for seg in results:
+            # 如果结果长度超过 10，尝试清洗
+            if len(seg.text) > 10:
+                logger.debug(
+                    f"[{self.session_id}] [长结果清洗] 检测到长结果 | "
+                    f"词汇: '{seg.text[:20]}...' | 长度: {len(seg.text)} | "
+                    f"全局位置: {seg.start_pos}-{seg.end_pos}"
+                )
+
+                try:
+                    # 尝试在该结果中找到最短的被阻断子串
+                    shorter_word = await self._find_minimal_blocked_substring(
+                        seg.text, probe_func
+                    )
+
+                    if shorter_word and len(shorter_word) < len(seg.text):
+                        # 找到了更短的核心词
+                        # 【关键】在原始长句中查找该词的位置
+                        # 使用 find() 找到相对于 seg.text 的偏移
+                        relative_offset = seg.text.find(shorter_word)
+                        
+                        if relative_offset >= 0:
+                            # 【关键】将相对偏移转换为全局坐标
+                            # seg.start_pos 已经是全局坐标
+                            # relative_offset 是相对于 seg.text 的偏移
+                            # 所以全局坐标 = seg.start_pos + relative_offset
+                            cleaned_seg = SensitiveSegment(
+                                text=shorter_word,
+                                start_pos=seg.start_pos + relative_offset,
+                                end_pos=seg.start_pos + relative_offset + len(shorter_word)
+                            )
+                            logger.info(
+                                f"[{self.session_id}] [长结果清洗] 清洗成功 | "
+                                f"原词: '{seg.text[:20]}...' (长度 {len(seg.text)}, 位置 {seg.start_pos}-{seg.end_pos}) | "
+                                f"新词: '{shorter_word}' (长度 {len(shorter_word)}, 位置 {cleaned_seg.start_pos}-{cleaned_seg.end_pos})"
+                            )
+                            cleaned.append(cleaned_seg)
+                            continue
+
+                    # 如果没找到更短的词，保留原结果
+                    logger.debug(
+                        f"[{self.session_id}] [长结果清洗] 未找到更短的核心词，保留原结果 | "
+                        f"词汇: '{seg.text[:20]}...'"
+                    )
+                    cleaned.append(seg)
+                except Exception as e:
+                    # 【修复】网络异常时，保留原结果而不是中断清洗
+                    logger.warning(
+                        f"[{self.session_id}] [长结果清洗] 清洗过程网络异常: {type(e).__name__}: {str(e)}。"
+                        f"保留原结果 | 词汇: '{seg.text[:20]}...'"
+                    )
+                    cleaned.append(seg)
+            else:
+                # 长度 <= 10，直接保留
+                cleaned.append(seg)
+
+        return cleaned

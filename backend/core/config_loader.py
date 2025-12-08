@@ -54,7 +54,7 @@ def _save_json_sync(path, data: Dict[str, Any]):
         raise
 
 def _get_available_presets_sync() -> List[Dict[str, Any]]:
-    """同步获取所有可用的预设列表。"""
+    """同步获取所有可用的预设列表，包含完整的规则数据。"""
     presets = []
     if not PRESETS_DIR.is_dir():
         logger.warning(f"预设目录不存在: {PRESETS_DIR}")
@@ -65,7 +65,10 @@ def _get_available_presets_sync() -> List[Dict[str, Any]]:
             presets.append({
                 'name': preset_data['name'],
                 'display_name': preset_data['display_name'],
-                'description': preset_data.get('description', '')
+                'description': preset_data.get('description', ''),
+                'block_status_codes': preset_data.get('block_status_codes', []),
+                'block_keywords': preset_data.get('block_keywords', []),
+                'retry_status_codes': preset_data.get('retry_status_codes', [429, 502, 503, 504])
             })
     return presets
 

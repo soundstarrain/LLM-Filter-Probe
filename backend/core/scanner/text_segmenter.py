@@ -30,7 +30,8 @@ class TextSegmenter:
 
         self.segment_size = segment_size
         self.overlap_size = overlap_size
-        logger.info(f"TextSegmenter initialized with segment_size={segment_size}, overlap_size={overlap_size}")
+        # 【修复】移除此处的初始化日志，避免与 scan_started 中的日志重复
+        # logger.info(f"TextSegmenter initialized with segment_size={segment_size}, overlap_size={overlap_size}")
 
     def split(self, text: str) -> List[Tuple[str, int, int]]:
         """

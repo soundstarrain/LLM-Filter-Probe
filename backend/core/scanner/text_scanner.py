@@ -80,16 +80,9 @@ class TextScanner:
 
     async def set_log_callback(self, callback: Callable):
         """设置用于发送事件的回调函数"""
-        async def wrapped_callback(event: Dict[str, Any]):
-            if event.get("event") == "unknown_status_code":
-                status_code = event.get("status_code")
-                response_snippet = event.get("response_snippet", "")
-                await self.emitter.handle_unknown_status_code(status_code, response_snippet)
-                await callback(event)
-            else:
-                await callback(event)
-        
-        await self.emitter.set_callback(wrapped_callback)
+        # 直接设置回调，不需要包装
+        # unknown_status_code 事件已经由 emitter 正确处理
+        await self.emitter.set_callback(callback)
 
     async def handle_new_keyword_event(self, event: Dict[str, Any]):
         """事件处理器：处理新发现的敏感词事件"""
@@ -289,9 +282,6 @@ class TextScanner:
         # 【修复】重置动态掩码，防止跨扫描污染
         if hasattr(self.engine, 'reset_masking'):
             self.engine.reset_masking()
-        # 【修复】重置动态掩码，防止跨扫描污染
-        if hasattr(self.engine, 'reset_masking'):
-            self.engine.reset_masking()
         
         try:
             if hasattr(self.engine, "unknown_status_codes"):
@@ -335,57 +325,174 @@ class TextScanner:
         segments = self.segmenter.split(text)
         logger.info(f"[{self.session_id}] 文本已分割成 {len(segments)} 个段进行扫描。")
 
-        for segment_text, start_pos, end_pos in segments:
-            if self.should_stop:
-                logger.warning(f"[{self.session_id}] 扫描被用户中止")
-                await self.emitter.log_message("warning", "扫描已被用户中止")
-                break
+        # 【修复】使用 Semaphore 实现真正的并发处理
+        concurrency = self.engine.preset.concurrency if hasattr(self.engine, 'preset') else 10
+        sem = asyncio.Semaphore(concurrency)
+        
+        async def process_segment(segment_text: str, start_pos: int, end_pos: int) -> List[tuple]:
+            """
+            并发处理单个段的 worker 函数 - 实现等长延迟掩码机制。
             
-            result = await self.engine.probe(segment_text)
+            流程：
+            1. [Late Binding] 获取最新的等长掩码文本
+            2. [Optimization] 检查是否全被掩码
+            3. [Probe] 执行扫描
+            4. [Result Restoration] 从原文本中还原真实敏感词
+            
+            - 【实时反馈】在函数末尾更新并发送实时进度。
+            - 【结果隔离】只返回本段的发现结果，不修改全局列表。
+            """
+            local_findings = []
+            status = ScanStatus.SAFE
+            error_info = None
+            segment_length = end_pos - start_pos
 
-            if result.status == ScanStatus.MASKED:
-                await self.emitter.log_message("info", f"段 [pos:{start_pos}-{end_pos}] 已跳过 (包含已知敏感词)")
-            elif result.status == ScanStatus.BLOCKED:
-                reason = f" (原因: {result.block_reason})" if result.block_reason else ""
-                await self.emitter.log_message("info", f"段 [pos:{start_pos}-{end_pos}] 被拦截{reason}，调用二分算法进行查找...")
-                found_in_segment = await self.searcher.search(segment_text, start_pos)
-                
-                for segment in found_in_segment:
-                    result_tuple = (segment.start_pos, segment.end_pos, segment.text)
-                    self.results_set.add(result_tuple)
-                
+            try:
+                async with sem:
+                    if self.should_stop:
+                        raise asyncio.CancelledError("Scan stopped by user.")
+
+                    # 【Step 1】Late Binding: 获取最新的等长掩码文本
+                    # 由于是等长替换，masked_segment 的长度 == segment_text 的长度
+                    masked_segment = self.engine.mask_manager.apply_masks(segment_text)
+                    
+                    # 【Step 2】Optimization: 检查是否全被掩码
+                    # 如果替换成了全 '*'，说明全是敏感词
+                    if masked_segment.strip() and all(c == '*' or c.isspace() for c in masked_segment):
+                        status = ScanStatus.MASKED
+                        await self.emitter.log_message(
+                            "info", 
+                            f"段 [pos:{start_pos}-{end_pos}] 已被完全屏蔽，跳过"
+                        )
+                    else:
+                        # 【Step 3】Probe: 执行扫描
+                        # 注意：我们把 masked_segment 传给 probe
+                        # 因为已知词被变成了 '*'，API 不会再拦截它们
+                        # 如果 API 依然拦截，说明有【新】的敏感词
+                        result = await self.engine.probe(masked_segment)
+                        status = result.status
+                        
+                        if status == ScanStatus.BLOCKED:
+                            reason = f" (原因: {result.block_reason})" if result.block_reason else ""
+                            await self.emitter.log_message(
+                                "info", 
+                                f"段 [pos:{start_pos}-{end_pos}] 被拦截{reason}，启动深度扫描..."
+                            )
+                            # 【关键】使用原始文本进行精确扫描，而不是掩码后的文本
+                            found_in_segment = await self.searcher.search(segment_text, start_pos)
+                            
+                            # 【Step 4】Result Restoration: 从原文本中还原真实敏感词
+                            # searcher 返回的 findings 中的 text 可能是掩码后的内容
+                            # 我们需要用原始 segment_text 还原出真实的敏感词文本
+                            for finding in found_in_segment:
+                                # 计算相对位置
+                                rel_start = finding.start_pos - start_pos
+                                rel_end = finding.end_pos - start_pos
+                                
+                                # 从【原文本】中提取真实内容
+                                if 0 <= rel_start < len(segment_text) and 0 <= rel_end <= len(segment_text):
+                                    real_word = segment_text[rel_start:rel_end]
+                                    # 创建修正后的结果（使用原始坐标和真实文本）
+                                    local_findings.append((finding.start_pos, finding.end_pos, real_word))
+                                else:
+                                    # 如果坐标超出范围，使用 finding 中的文本（降级处理）
+                                    local_findings.append((finding.start_pos, finding.end_pos, finding.text))
+                        
+                        elif status == ScanStatus.SAFE:
+                            logger.debug(f"[{self.session_id}] 段 [pos:{start_pos}-{end_pos}] 安全。")
+            
+            except asyncio.CancelledError as e:
+                logger.warning(f"[{self.session_id}] 段 [pos:{start_pos}-{end_pos}] 被取消: {e}")
+                error_info = str(e)
+            except Exception as e:
+                logger.error(f"[{self.session_id}] 段 [pos:{start_pos}-{end_pos}] 处理异常: {e}", exc_info=True)
+                error_info = str(e)
+                status = ScanStatus.ERROR
+
+            # --- 【关键】实时进度更新 --- 
+            self.total_scanned_pos += segment_length
+            if status == ScanStatus.SAFE:
+                self.uncleared_chars -= segment_length
+            
+            # 将本段发现的敏感词加入全局结果集
+            if local_findings:
+                for finding in local_findings:
+                    self.results_set.add(finding)
                 self.sensitive_count = len(self.results_set)
-            else:
-                logger.debug(f"[{self.session_id}] 段 [pos:{start_pos}-{end_pos}] 安全。")
-                segment_length = end_pos - start_pos
-                self.uncleared_chars = max(0, self.uncleared_chars - segment_length)
-                logger.debug(
-                    f"[{self.session_id}] [Progress] 干净块处理 | "
-                    f"块长: {segment_length} | 未清除字符: {self.uncleared_chars}"
-                )
-
-            await self._check_and_report_unknown_codes()
-
-            self.total_scanned_pos = end_pos
-            logger.debug(
-                f"[{self.session_id}] [Progress] 发送进度更新 | "
-                f"已扫描: {end_pos} | 总数: {self.total_text_length} | "
-                f"未清除: {self.uncleared_chars} | 敏感词: {self.sensitive_count}"
-            )
-            # 构建当前的分组结果并随进度事件一起发送，确保前端实时更新
+            
+            # 构建分组结果并发送进度事件
             current_grouped_results = self._build_grouped_results()
             await self.emitter.progress_updated(
-                scanned=end_pos,
+                scanned=self.total_scanned_pos,
                 total=self.total_text_length,
                 sensitive_count=self.sensitive_count,
                 results=current_grouped_results
             )
+            
+            return local_findings # 只返回结果
 
+        tasks = [process_segment(s, p_start, p_end) for s, p_start, p_end in segments]
+        segment_results = await asyncio.gather(*tasks)
+
+        # --- 检验流程开始 ---
+        # 此时 self.results_set 里是并发扫描产生的、混合了高精度短词和低精度长句的脏数据
+        
+        logger.info(
+            f"[{self.session_id}] [Golden Flow] 开始检验流程 | "
+            f"脏数据候选数: {len(self.results_set)}"
+        )
+        
+        # 步骤 1: 统计脏数据中的候选片段
+        dirty_candidates = list(self.results_set)
+        if dirty_candidates:
+            logger.debug(
+                f"[{self.session_id}] [Golden Flow] 脏数据样本 (前5个): "
+                f"{[f'{text[:20]}...' for _, _, text in dirty_candidates[:5]]}"
+            )
+
+        # 步骤 2: 【验证】过滤掉所有 API 认为是 SAFE 的幻觉长句
+        logger.info(f"[{self.session_id}] [Golden Flow] 阶段 1/3: 验证 - 开始验证 {len(dirty_candidates)} 个候选片段")
+        validated_segments = await self._final_validation(dirty_candidates)
+        logger.info(
+            f"[{self.session_id}] [Golden Flow] 阶段 1/3: 验证 - 完成 | "
+            f"候选数: {len(dirty_candidates)} → 验证通过数: {len(validated_segments)} | "
+            f"过滤率: {(1 - len(validated_segments)/max(1, len(dirty_candidates)))*100:.1f}%"
+        )
+
+        # 步骤 3: 【精炼】处理包含关系，得到最终的核心关键词列表
+        logger.info(f"[{self.session_id}] [Golden Flow] 阶段 2/3: 精炼 - 开始精炼 {len(validated_segments)} 个已验证片段")
+        core_keywords = self._refine_and_deduplicate(validated_segments)
+        logger.info(
+            f"[{self.session_id}] [Golden Flow] 阶段 2/3: 精炼 - 完成 | "
+            f"已验证片段数: {len(validated_segments)} → 核心关键词数: {len(core_keywords)}"
+        )
+        if core_keywords:
+            logger.info(f"[{self.session_id}] [Golden Flow] 最终确认的核心敏感词: {sorted(core_keywords)}")
+
+        # 步骤 4: 【最终清点】抛弃旧坐标，用核心关键词重新进行全局搜索
+        logger.info(f"[{self.session_id}] [Golden Flow] 阶段 3/3: 清点 - 开始最终清点")
+        final_results_set = self._final_enumeration(core_keywords, self.original_text)
+        logger.info(
+            f"[{self.session_id}] [Golden Flow] 阶段 3/3: 清点 - 完成 | "
+            f"核心关键词数: {len(core_keywords)} → 最终结果数: {len(final_results_set)}"
+        )
+
+        # 步骤 5: 格式化并返回最终结果
+        # 用最干净、最准确的结果覆盖 self.results_set
+        logger.info(
+            f"[{self.session_id}] [Golden Flow] 检验流程完成 | "
+            f"脏数据: {len(dirty_candidates)} → 最终结果: {len(final_results_set)} | "
+            f"总过滤率: {(1 - len(final_results_set)/max(1, len(dirty_candidates)))*100:.1f}%"
+        )
+        
+        self.results_set = final_results_set
+        self.sensitive_count = len(self.results_set)
+
+        # 按绝对坐标排序，确保顺序一致性
         deduplicated_segments = [
             SensitiveSegment(text=content, start_pos=start, end_pos=end)
-            for start, end, content in sorted(self.results_set, key=lambda x: x[0])
+            for start, end, content in sorted(self.results_set, key=lambda x: (x[0], x[1]))
         ]
-        self.sensitive_count = len(deduplicated_segments)
 
         grouped_results = self._build_grouped_results()
         logger.info(
@@ -399,14 +506,31 @@ class TextScanner:
         scan_duration = self.scan_end_time - self.scan_start_time
         duration_str = self._format_duration(scan_duration)
 
+        # 【修复】在扫描完成时，强制发送 100% 的进度更新
+        # 这确保前端的进度条总是能到达 100%，而不会卡在 91% 或其他中间值
+        await self.emitter.progress_updated(
+            scanned=self.total_text_length,
+            total=self.total_text_length,
+            sensitive_count=self.sensitive_count,
+            results=self._build_grouped_results(),
+            force=True  # 强制发送，跳过节流
+        )
+
         stats = self.get_statistics()
+        
+        # 【修复】获取未知状态码统计和敏感词判断依据
+        unknown_code_counts = getattr(self.engine, 'unknown_status_code_counts', {})
+        sensitive_word_evidence = getattr(self.engine, 'sensitive_word_evidence', {})
+        
         await self.emitter.scan_completed(
             total_sensitive_found=stats['sensitive_count'],
             total_requests=stats['request_count'],
             unknown_codes=list(self.engine.unknown_status_codes),
-            results=grouped_results,
+            results=grouped_results,  # 修正字段名
             duration_text=duration_str,
-            duration_seconds=scan_duration
+            duration_seconds=scan_duration,
+            unknown_code_counts=unknown_code_counts,
+            sensitive_word_evidence=sensitive_word_evidence
         )
 
         logger.info(
@@ -441,6 +565,200 @@ class TextScanner:
             for code in new_codes:
                 await self.emitter.unknown_status_code_found(code)
             self.reported_unknown_codes.update(new_codes)
+
+    async def _final_validation(self, candidate_segments: List[tuple]) -> List[SensitiveSegment]:
+        """
+        【验证阶段】使用 API 再次验证所有候选片段，过滤掉幻觉长句。
+        
+        ✅ 已优化：使用并发处理，而非串行 for 循环
+        
+        流程：
+        1. 对每个候选片段调用 probe_func（并发执行）
+        2. 只保留 API 认为是 BLOCKED 的片段
+        3. 返回已验证的、真实的敏感片段列表
+        
+        Args:
+            candidate_segments: 候选片段列表，每个元素为 (start_pos, end_pos, text)
+            
+        Returns:
+            已验证的 SensitiveSegment 列表
+        """
+        if not candidate_segments:
+            logger.info(f"[{self.session_id}] [Validation] 候选片段为空，跳过验证")
+            return []
+        
+        logger.info(
+            f"[{self.session_id}] [Validation] 开始验证 {len(candidate_segments)} 个候选片段（并发模式）..."
+        )
+        
+        # 创建验证任务列表
+        async def validate_single_segment(idx: int, start_pos: int, end_pos: int, text: str) -> Optional[SensitiveSegment]:
+            """验证单个片段"""
+            try:
+                # 调用 probe 函数验证该片段是否真的被拦截
+                # 【关键修复】传入 bypass_mask=True，跳过动态掩码，确保裸词被正确验证
+                # 这样可以避免已发现的敏感词被掩码成 '*' 后被误判为 SAFE
+                result = await self.engine.probe(text, bypass_mask=True)
+                
+                if result.status == ScanStatus.BLOCKED:
+                    # 这是一个真实的敏感片段
+                    logger.debug(
+                        f"[{self.session_id}] [Validation] 片段 {idx+1}/{len(candidate_segments)} "
+                        f"验证通过 | 位置: {start_pos}-{end_pos} | 内容: '{text[:30]}...'"
+                    )
+                    return SensitiveSegment(text=text, start_pos=start_pos, end_pos=end_pos)
+                else:
+                    # 这是一个幻觉长句，被 API 认为是安全的
+                    logger.debug(
+                        f"[{self.session_id}] [Validation] 片段 {idx+1}/{len(candidate_segments)} "
+                        f"验证失败（幻觉） | 位置: {start_pos}-{end_pos} | 内容: '{text[:30]}...'"
+                    )
+                    return None
+            except Exception as e:
+                logger.error(
+                    f"[{self.session_id}] [Validation] 片段 {idx+1}/{len(candidate_segments)} "
+                    f"验证异常: {e}"
+                )
+                # 验证异常时，保守起见，保留该片段
+                return SensitiveSegment(text=text, start_pos=start_pos, end_pos=end_pos)
+        
+        # 并发执行所有验证任务
+        tasks = [
+            validate_single_segment(idx, start_pos, end_pos, text)
+            for idx, (start_pos, end_pos, text) in enumerate(candidate_segments)
+        ]
+        
+        results = await asyncio.gather(*tasks, return_exceptions=False)
+        
+        # 过滤掉 None 结果（验证失败的片段）
+        validated_segments = [seg for seg in results if seg is not None]
+        
+        logger.info(
+            f"[{self.session_id}] [Validation] 验证完成（并发） | "
+            f"候选数: {len(candidate_segments)} | 通过数: {len(validated_segments)} | "
+            f"过滤率: {(1 - len(validated_segments)/len(candidate_segments))*100:.1f}%"
+        )
+        
+        return validated_segments
+
+    def _refine_and_deduplicate(self, validated_segments: List[SensitiveSegment]) -> Set[str]:
+        """
+        【精炼阶段】对已通过验证的片段进行精炼，处理包含关系，提取最终的核心关键词列表。
+        
+        流程：
+        1. 从所有片段中提取关键词
+        2. 【关键】按长度排序，短的优先
+        3. 【关键】检查文本包含关系，优先保留短词，丢弃长词
+        4. 返回去重后的核心关键词集合
+        
+        Args:
+            validated_segments: 已验证的 SensitiveSegment 列表
+            
+        Returns:
+            最终的核心关键词集合（已去重，只保留最短的子序列）
+        """
+        if not validated_segments:
+            logger.info(f"[{self.session_id}] [Refinement] 已验证片段为空，返回空关键词集合")
+            return set()
+        
+        logger.info(
+            f"[{self.session_id}] [Refinement] 开始精炼 {len(validated_segments)} 个已验证片段..."
+        )
+        
+        # 步骤 1：从所有片段中提取关键词
+        all_keywords = {seg.text for seg in validated_segments}
+        
+        # 步骤 2：【关键修复】按长度排序，短的优先
+        # 这让短词有机会"吃掉"包含它的长词
+        sorted_keywords = sorted(all_keywords, key=lambda k: (len(k), k))
+        
+        # 步骤 3：【关键修复】检查文本包含关系，优先保留短词，丢弃长词
+        filtered_keywords = []
+        
+        for current_keyword in sorted_keywords:
+            is_contained = False
+            
+            # 检查是否被已保留的更短关键词包含
+            for retained_keyword in filtered_keywords:
+                # 如果 current 被 retained 包含，则 current 是冗余的
+                if retained_keyword in current_keyword:
+                    is_contained = True
+                    logger.debug(
+                        f"[{self.session_id}] [Refinement] 关键词被包含（丢弃） | "
+                        f"被包含: '{current_keyword[:30]}...' | 包含者: '{retained_keyword}'"
+                    )
+                    break
+            
+            if not is_contained:
+                filtered_keywords.append(current_keyword)
+                logger.debug(
+                    f"[{self.session_id}] [Refinement] 关键词保留 | "
+                    f"词汇: '{current_keyword}' | 长度: {len(current_keyword)}"
+                )
+        
+        core_keywords = set(filtered_keywords)
+        
+        logger.info(
+            f"[{self.session_id}] [Refinement] 精炼完成 | "
+            f"输入片段数: {len(validated_segments)} | 输出关键词数: {len(core_keywords)} | "
+            f"去重率: {(1 - len(core_keywords)/len(all_keywords))*100:.1f}%"
+        )
+        
+        return core_keywords
+
+    def _final_enumeration(self, core_keywords: Set[str], original_text: str) -> Set[tuple]:
+        """
+        【最终清点阶段】用已去重的关键词列表，在原始文本上重新进行全局搜索，
+        得到最准确的位置和数量。
+        
+        流程：
+        1. 遍历每个核心关键词（已在精炼阶段去重）
+        2. 使用 re.finditer 查找所有匹配项
+        3. 记录精确的位置和内容
+        
+        Args:
+            core_keywords: 最终确认的核心关键词集合（已去重）
+            original_text: 原始文本
+            
+        Returns:
+            最终结果集合，每个元素为 (start_pos, end_pos, keyword)
+        """
+        if not core_keywords:
+            logger.info(f"[{self.session_id}] [Enumeration] 核心关键词为空，返回空结果集")
+            return set()
+        
+        logger.info(
+            f"[{self.session_id}] [Enumeration] 开始最终清点，关键词数: {len(core_keywords)}"
+        )
+        
+        final_results_set = set()
+        
+        for keyword in sorted(core_keywords):  # 按字母顺序排序以确保一致性
+            try:
+                # 使用 re.finditer 查找所有匹配项
+                pattern = re.escape(keyword)
+                matches = list(re.finditer(pattern, original_text))
+                
+                for match in matches:
+                    start, end = match.span()
+                    final_results_set.add((start, end, keyword))
+                
+                logger.debug(
+                    f"[{self.session_id}] [Enumeration] 关键词清点完成 | "
+                    f"词汇: '{keyword}' | 出现次数: {len(matches)}"
+                )
+            except Exception as e:
+                logger.error(
+                    f"[{self.session_id}] [Enumeration] 关键词清点异常 | "
+                    f"词汇: '{keyword}' | 错误: {e}"
+                )
+        
+        logger.info(
+            f"[{self.session_id}] [Enumeration] 最终清点完成 | "
+            f"核心关键词数: {len(core_keywords)} | 最终结果数: {len(final_results_set)}"
+        )
+        
+        return final_results_set
 
     def _build_grouped_results(self) -> Dict[str, list]:
         """

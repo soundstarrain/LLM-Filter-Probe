@@ -74,13 +74,21 @@ export const useRootStore = defineStore('root', () => {
   const results = reactive({
     grouped: {},
     statistics: { total_results: 0, found: 0, duration: 0, total_requests: 0 },
+    // 【新增】未知状态码统计和敏感词判断依据
+    unknownStatusCodeCounts: {},
+    sensitiveWordEvidence: {},
   });
-  const logs = reactive({ messages: [], maxSize: LOG_CONFIG.MAX_SIZE });
+  const logs = reactive({ 
+    messages: [], 
+    maxSize: LOG_CONFIG.MAX_SIZE,
+    autoClearOnRefresh: true, // 刷新时自动清空日志
+  });
   const system = reactive({
     connectionStatus: 'offline', // 'offline', 'online', 'reconnecting'
     sessionId: '',
     activeTab: 'scanner',
     wsSend: null, // 用于存储 WebSocket 的 send 方法
+    isPageRefreshing: false, // 标记页面是否正在刷新
   });
   const monitor = reactive({
     currentLatency: 0,
@@ -267,6 +275,20 @@ export const useRootStore = defineStore('root', () => {
   // --- Presets Actions ---
   function setPreset(newPreset) {
     settingsConfig.preset = newPreset;
+    
+    // 从 availablePresets 中查找对应的预设数据
+    const selectedPreset = presetsConfig.availablePresets.find(p => p.name === newPreset);
+    if (selectedPreset) {
+      // 更新 customRules 为选中预设的规则数据
+      presetsConfig.customRules = {
+        block_status_codes: selectedPreset.block_status_codes || [],
+        block_keywords: selectedPreset.block_keywords || [],
+        retry_status_codes: selectedPreset.retry_status_codes || [429, 502, 503, 504],
+      };
+      console.log(`✅ 预设已切换为 '${newPreset}'，规则数据已更新:`, presetsConfig.customRules);
+    } else {
+      console.warn(`⚠️ 未找到预设 '${newPreset}' 的数据`);
+    }
   }
 
   async function loadPresetsConfig() {
@@ -496,8 +518,21 @@ export const useRootStore = defineStore('root', () => {
     }
 
     // 实时更新结果列表
+    // 【修复】合并结果，而不是替换，以防止数据丢失
     if (newResults) {
-      results.grouped = newResults;
+      for (const [keyword, locations] of Object.entries(newResults)) {
+        if (results.grouped[keyword]) {
+          // 合并并去重
+          const existingLocations = new Set(results.grouped[keyword].map(loc => `${loc.start}-${loc.end}`));
+          for (const loc of locations) {
+            if (!existingLocations.has(`${loc.start}-${loc.end}`)) {
+              results.grouped[keyword].push(loc);
+            }
+          }
+        } else {
+          results.grouped[keyword] = locations;
+        }
+      }
     }
   }
   function completeScan(data) {
@@ -507,6 +542,13 @@ export const useRootStore = defineStore('root', () => {
     results.statistics.total_requests = data.total_requests || 0;
     results.statistics.duration = scanDuration.value;
     if (data.results) results.grouped = data.results;
+    // 【新增】保存未知状态码统计和敏感词判断依据
+    if (data.unknown_status_code_counts) {
+      results.unknownStatusCodeCounts = data.unknown_status_code_counts;
+    }
+    if (data.sensitive_word_evidence) {
+      results.sensitiveWordEvidence = data.sensitive_word_evidence;
+    }
   }
   async function cancelScan() {
     if (!scanState.isScanning) return;
@@ -529,6 +571,14 @@ export const useRootStore = defineStore('root', () => {
     scanState.totalBytes = data.total_length || 0;
     scanState.progress = 0;
     scanState.scannedBytes = 0;
+
+    // 【新增】清空上一轮结果与统计（包括敏感词判断依据与未知状态码统计）
+    results.grouped = {};
+    results.statistics.found = 0;
+    results.statistics.total_requests = 0;
+    results.statistics.duration = 0;
+    results.unknownStatusCodeCounts = {};
+    results.sensitiveWordEvidence = {};
   }
 
   function setScanError(error) {
@@ -552,6 +602,22 @@ export const useRootStore = defineStore('root', () => {
   }
   function clearLogs() {
     logs.messages = [];
+  }
+
+  /**
+   * 设置刷新时是否自动清空日志
+   * @param {boolean} enabled - 是否启用自动清空
+   */
+  function setAutoClearOnRefresh(enabled) {
+    logs.autoClearOnRefresh = enabled;
+  }
+
+  /**
+   * 标记页面正在刷新
+   * @param {boolean} isRefreshing - 是否正在刷新
+   */
+  function setPageRefreshing(isRefreshing) {
+    system.isPageRefreshing = isRefreshing;
   }
 
   /**
@@ -634,6 +700,8 @@ export const useRootStore = defineStore('root', () => {
     getLocationsByKeyword,
     addLog,
     clearLogs,
+    setAutoClearOnRefresh,
+    setPageRefreshing,
     initializeLogManagement,
   };
 });

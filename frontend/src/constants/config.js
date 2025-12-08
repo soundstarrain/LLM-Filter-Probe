@@ -19,7 +19,7 @@ export const HTTP_CONFIG = {
 
 // 日志配置
 export const LOG_CONFIG = {
-  MAX_SIZE: 1000, // 日志最大条数
+  MAX_SIZE: 100000, // 日志最大条数
   RETENTION_TIME: 24 * 60 * 60 * 1000, // 日志保留时间 (24小时)
 };
 

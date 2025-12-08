@@ -25,13 +25,15 @@ class ScanStatus(str, Enum):
 class ProbeResult:
     """探测结果类"""
     
-    def __init__(self, status: ScanStatus, code: int, body: str = "", response: Optional[Dict] = None, block_reason: Optional[str] = None, is_unknown_error_code: bool = False):
+    def __init__(self, status: ScanStatus, code: int, body: str = "", response: Optional[Dict] = None, block_reason: Optional[str] = None, is_unknown_error_code: bool = False, block_evidence: Optional[Dict] = None):
         self.status = status
         self.code = code
         self.body = body
         self.response = response or {}
         self.block_reason = block_reason
         self.is_unknown_error_code = is_unknown_error_code
+        # 【新增】阻断证据：记录是基于哪个状态码或哪个敏感词
+        self.block_evidence = block_evidence or {}
     
     def __eq__(self, other):
         if isinstance(other, ScanStatus):
@@ -80,11 +82,22 @@ class ResponseAnalyzer:
                     logger.debug(f"[{self.engine_id}] 响应包含阻止关键词: {keyword}")
                     context = self._extract_context(response_text, keyword)
                     reason = f"关键词: '{keyword}' (上下文: {context})"
-                    return ProbeResult(ScanStatus.BLOCKED, status_code, response_text, block_reason=reason, is_unknown_error_code=is_unknown_error_code)
+                    # 【新增】记录判断依据：基于敏感词
+                    evidence = {
+                        "type": "keyword",
+                        "value": keyword,
+                        "context": context
+                    }
+                    return ProbeResult(ScanStatus.BLOCKED, status_code, response_text, block_reason=reason, is_unknown_error_code=is_unknown_error_code, block_evidence=evidence)
 
         if status_code in self.preset.block_status_codes:
             logger.debug(f"[{self.engine_id}] 状态码 {status_code} 在阻止列表中")
-            return ProbeResult(ScanStatus.BLOCKED, status_code, response_text, block_reason=f"状态码:{status_code}", is_unknown_error_code=is_unknown_error_code)
+            # 【新增】记录判断依据：基于状态码
+            evidence = {
+                "type": "status_code",
+                "value": status_code
+            }
+            return ProbeResult(ScanStatus.BLOCKED, status_code, response_text, block_reason=f"状态码:{status_code}", is_unknown_error_code=is_unknown_error_code, block_evidence=evidence)
 
         if status_code in self.preset.retry_status_codes:
             logger.debug(f"[{self.engine_id}] 响应被判定为 RETRY (code={status_code})")

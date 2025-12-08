@@ -100,7 +100,9 @@ class BinarySearcher:
         else:
             ratio_status = "🔴 危险（死循环）"
         
-        logger.info(
+        # 【修复】移除此处的初始化日志，避免与 scan_started 中的日志重复
+        # 算法参数已在 scan_started 中统一输出
+        logger.debug(
             f"[{self.session_id}] [BinarySearcher] 已初始化 | "
             f"算法模式={self.algorithm_mode} | "
             f"算法切换阈值={self.algorithm_switch_threshold} | "

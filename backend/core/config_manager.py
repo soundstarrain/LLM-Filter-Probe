@@ -3,6 +3,14 @@
 
 提供一个完全异步的单例 ConfigManager 类，用于加载、合并和保存多层配置。
 所有文件 I/O 操作都在独立的线程中执行，以避免阻塞 asyncio 事件循环。
+
+主要方法:
+- load_credentials(): 异步加载 API 凭证
+- save_credentials(): 异步保存 API 凭证
+- load_settings(): 异步加载合并后的高级设置
+- save_settings(): 异步保存高级设置
+- load_presets_list(): 异步加载所有可用的预设列表
+- load_rules(): 异步加载指定预设的规则
 """
 from pathlib import Path
 import asyncio
