@@ -125,7 +125,7 @@ graph TD
     TextEnd -->|No| ForwardScan
     TextEnd -->|Yes| ScanEnd
     
-    ScanEnd --> VerifyPhase["检验流程<br/>三阶段精炼"]
+    ScanEnd --> VerifyPhase["检验流程"]
     
     VerifyPhase --> VerifyStage["1️.验证阶段<br/>API再次验证所有候选片段<br/>过滤幻觉长句"]
     VerifyStage --> RefineStage["2️.精炼阶段<br/>处理包含关系<br/>提取核心关键词"]
