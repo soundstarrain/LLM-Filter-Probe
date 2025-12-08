@@ -125,13 +125,9 @@ graph TD
     TextEnd -->|No| ForwardScan
     TextEnd -->|Yes| ScanEnd
     
-    ScanEnd --> VerifyPhase["检验流程"]
+    ScanEnd --> VerifyPhase["检验流程<br/>1.带回验证<br/>2.合并相同区间和内容<br/>3.去重"]
     
-    VerifyPhase --> VerifyStage["1️.验证阶段<br/>API再次验证所有候选片段<br/>过滤幻觉长句"]
-    VerifyStage --> RefineStage["2️.精炼阶段<br/>处理包含关系<br/>提取核心关键词"]
-    RefineStage --> CountStage["3️.清点阶段<br/>用核心关键词重新全局搜索<br/>确认最终位置和数量"]
-    
-    CountStage --> FinalResult["输出所有结果<br/>记录判断依据<br/>统计未知状态码"]
+    VerifyPhase --> FinalResult["输出所有结果<br/>记录判断依据<br/>统计未知状态码"]
     FinalResult --> WebSocketPush["WebSocket推送结果<br/>实时反馈到前端"]
     WebSocketPush --> FrontendDisplay["前端显示<br/>搜索/分页功能"]
     FrontendDisplay --> End(["✨ 扫描完成"])
