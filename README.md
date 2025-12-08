@@ -94,20 +94,57 @@ LLM-Filter-Probe 并非简单的暴力穷举，而是通过以下逻辑最小化
 
 ```mermaid
 graph TD
-    A[输入文本] --> B{长度 >35?};
-    B -- Yes --> C[宏观二分查找<br>快速缩小范围];
-    B -- No --> D[微观精确定位];
-    C --> D;
-    D --> E[前向扫描<br>隔离首个目标];
-    E --> F[精确挤压<br>确定边界];
-    F --> G[记录结果<br>推进扫描位置];
-    G --> H{处理完所有文本?};
-    H -- No --> E;
-    H -- Yes --> I[检验流程<br>三阶段精炼];
-    I --> J[验证阶段<br>过滤幻觉长句];
-    J --> K[精炼阶段<br>提取核心关键词];
-    K --> L[清点阶段<br>最终位置确认];
-    L --> M[输出所有结果];
+    Start([开始扫描]) --> LoadConfig["加载配置<br/>settings/presets/algorithm"]
+    LoadConfig --> Input["输入待扫描文本"]
+    Input --> PreCheck{"文本长度<br/>检查"}
+    
+    PreCheck -->|超长文本| ChunkPreprocess["流式分块预处理<br/>分段预检"]
+    PreCheck -->|正常长度| LengthCheck{"文本长度<br/>> 35字符?"}
+    ChunkPreprocess --> LengthCheck
+    
+    LengthCheck -->|Yes| MacroPhase["宏观二分查找阶段"]
+    LengthCheck -->|No| MicroPhase["微观精确定位阶段"]
+    
+    MacroPhase --> BinarySearch["递归二分切割<br/>快速缩小范围"]
+    BinarySearch --> LockSegment["锁定包含敏感内容<br/>的小片段"]
+    LockSegment --> MicroPhase
+    
+    MicroPhase --> ForwardScan["前向扫描<br/>找首个触发拦截的前缀"]
+    ForwardScan --> ScanResult{"找到<br/>敏感词?"}
+    
+    ScanResult -->|No| ScanEnd["扫描完成<br/>进入检验流程"]
+    ScanResult -->|Yes| PrecisionSqueeze["精确挤压<br/>左侧收缩确定边界"]
+    
+    PrecisionSqueeze --> LeftBoundary["确定词语<br/>左边界"]
+    LeftBoundary --> RecordResult["记录敏感词<br/>及其坐标"]
+    
+    RecordResult --> ApplyMask["应用等长延迟掩码<br/>替换为相同长度的*"]
+    ApplyMask --> AdvancePos["物理位置推进<br/>从词后位置继续扫描"]
+    
+    AdvancePos --> TextEnd{"处理完<br/>所有文本?"}
+    TextEnd -->|No| ForwardScan
+    TextEnd -->|Yes| ScanEnd
+    
+    ScanEnd --> VerifyPhase["检验流程<br/>三阶段精炼"]
+    
+    VerifyPhase --> VerifyStage["1️.验证阶段<br/>API再次验证所有候选片段<br/>过滤幻觉长句"]
+    VerifyStage --> RefineStage["2️.精炼阶段<br/>处理包含关系<br/>提取核心关键词"]
+    RefineStage --> CountStage["3️.清点阶段<br/>用核心关键词重新全局搜索<br/>确认最终位置和数量"]
+    
+    CountStage --> FinalResult["输出所有结果<br/>记录判断依据<br/>统计未知状态码"]
+    FinalResult --> WebSocketPush["WebSocket推送结果<br/>实时反馈到前端"]
+    WebSocketPush --> FrontendDisplay["前端显示<br/>搜索/分页功能"]
+    FrontendDisplay --> End(["✨ 扫描完成"])
+    
+    style Start fill:#90EE90,stroke:#228B22,stroke-width:2px,color:#000
+    style End fill:#FFB6C6,stroke:#C71585,stroke-width:2px,color:#000
+    style MacroPhase fill:#87CEEB,stroke:#4682B4,stroke-width:2px,color:#000
+    style MicroPhase fill:#87CEEB,stroke:#4682B4,stroke-width:2px,color:#000
+    style VerifyPhase fill:#FFD700,stroke:#FF8C00,stroke-width:2px,color:#000
+    style WebSocketPush fill:#DDA0DD,stroke:#8B008B,stroke-width:2px,color:#000
+    style BinarySearch fill:#B0E0E6,stroke:#4682B4,stroke-width:1px,color:#000
+    style ForwardScan fill:#B0E0E6,stroke:#4682B4,stroke-width:1px,color:#000
+    style PrecisionSqueeze fill:#B0E0E6,stroke:#4682B4,stroke-width:1px,color:#000
 ```
 
 ### 核心步骤
