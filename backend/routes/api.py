@@ -7,7 +7,7 @@ API 路由模块
 主要功能包括：
 - **配置管理**: 获取和保存 API 凭证、扫描规则预设和高级设置。
 - **会话管理**: 创建、查询和删除扫描会话。
-- **扫描控制**: 取消正在进行的扫描任务。
+- **扫描控制**: 发起扫描、查询状态、获取结果、取消扫描。
 - **系统工具**: 提供 API 凭证验证和健康检查功能。
 """
 from fastapi import APIRouter, HTTPException, Depends
@@ -95,6 +95,53 @@ async def save_settings_config(updates: Dict[str, Any]):
         raise_http_error(message=f"保存高级设置失败: {e}", status_code=500)
 
 # --- 扫描与验证端点 ---
+
+@router.post("/scan/{session_id}/start", summary="开始扫描(HTTP)", tags=["Scan"])
+async def start_scan(session_id: str, payload: Dict[str, Any]):
+    """以 HTTP 方式发起一次扫描（简化集成，无需 WebSocket）。"""
+    text = (payload or {}).get('text')
+    if not text or not isinstance(text, str):
+        raise_http_error(message="请求体需要提供非空的 text 字段", status_code=400)
+
+    session_manager = get_session_manager()
+    session = session_manager.get_session(session_id)
+    if not session or not session.scan_service:
+        raise_http_error(message="会话未找到或扫描服务未初始化", status_code=404)
+
+    try:
+        await session.start_scan(text)
+        return success_response(message="扫描已启动")
+    except RuntimeError as e:
+        raise_http_error(message=str(e), status_code=409)
+    except Exception as e:
+        logger.error(f"[{session_id}] 启动扫描时出错: {e}", exc_info=True)
+        raise_http_error(message=f"启动扫描时出错: {e}", status_code=500)
+
+@router.get("/scan/{session_id}/status", summary="查询扫描状态(HTTP)", tags=["Scan"])
+async def get_scan_status(session_id: str):
+    session_manager = get_session_manager()
+    session = session_manager.get_session(session_id)
+    if not session:
+        raise_http_error(message="会话未找到", status_code=404)
+
+    try:
+        status = session.get_scan_status()
+        return success_response(data=status, message="状态获取成功")
+    except Exception as e:
+        raise_http_error(message=f"获取状态失败: {e}", status_code=500)
+
+@router.get("/scan/{session_id}/results", summary="获取扫描结果(HTTP)", tags=["Scan"])
+async def get_scan_results(session_id: str):
+    session_manager = get_session_manager()
+    session = session_manager.get_session(session_id)
+    if not session:
+        raise_http_error(message="会话未找到", status_code=404)
+
+    try:
+        results = session.get_scan_results()
+        return success_response(data=results, message="结果获取成功")
+    except Exception as e:
+        raise_http_error(message=f"获取结果失败: {e}", status_code=500)
 
 @router.post("/scan/{session_id}/cancel", summary="取消扫描", tags=["Scan"])
 async def cancel_scan(session_id: str):

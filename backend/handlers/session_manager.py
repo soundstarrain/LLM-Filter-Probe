@@ -5,10 +5,12 @@
 - 创建和销毁扫描会话 (ScanSession)
 - 为每个会话初始化 ScanService
 - 管理会话的生命周期
+- （新增）维护基于 HTTP 轮询的扫描状态与结果缓存
 """
 import uuid
 import logging
-from typing import Dict, Optional
+import asyncio
+from typing import Dict, Optional, Any, List
 from datetime import datetime
 
 from core.presets import Preset
@@ -28,6 +30,18 @@ class ScanSession:
         self.created_at = datetime.now()
         self.scan_service: Optional[ScanService] = None
         self.websocket_handler: Optional[WebSocketHandler] = None
+
+        # ---- 简化版 HTTP 轮询所需的状态缓存 ----
+        self.status: str = 'idle'  # idle | scanning | completed | error | canceled
+        self.progress: Dict[str, Any] = {
+            'current': 0,
+            'total': 0,
+            'percentage': 0
+        }
+        self.results: List[Dict[str, Any]] = []  # {text, start_pos, end_pos, reason?}
+        self.logs: List[Dict[str, Any]] = []
+        self.summary: Dict[str, Any] = {}  # api_calls, duration_seconds 等
+        self.scan_task: Optional[asyncio.Task] = None
 
     async def initialize(self, event_callback=None):
         """
@@ -61,6 +75,153 @@ class ScanSession:
             "preset_name": self.preset.name,
             "created_at": self.created_at.isoformat(),
             "uptime": (datetime.now() - self.created_at).total_seconds(),
+        }
+
+    # ---------------- HTTP 轮询扫描支持（新增） ----------------
+    async def start_scan(self, text: str):
+        """以异步任务方式启动一次扫描，并缓存进度与结果，供 HTTP 轮询查询"""
+        if not text:
+            raise ValueError("text 不能为空")
+        if self.scan_task and not self.scan_task.done():
+            raise RuntimeError("已有扫描任务在进行中")
+
+        # 事件回调：由底层扫描流程调用，这里把事件转为内存状态
+        async def event_cb(message: Dict[str, Any]):
+            try:
+                event = message.get('event') or message.get('type')
+                data = message.get('data') or {}
+                if event == 'scan_start':
+                    total_length = data.get('total_length') or data.get('total') or 0
+                    self.progress.update({
+                        'current': 0,
+                        'total': total_length,
+                        'percentage': 0
+                    })
+                    self.status = 'scanning'
+                elif event == 'progress':
+                    scanned = data.get('scanned') or data.get('current') or 0
+                    total = data.get('total') or self.progress.get('total') or 0
+                    percentage = int(scanned / total * 100) if total > 0 else 0
+                    self.progress.update({
+                        'current': scanned,
+                        'total': total,
+                        'percentage': percentage
+                    })
+                elif event == 'sensitive_found_batch':
+                    findings = data.get('findings') or []
+                    # findings: [{keyword, start, end}]
+                    for f in findings:
+                        self.results.append({
+                            'text': f.get('keyword'),
+                            'start_pos': f.get('start'),
+                            'end_pos': f.get('end'),
+                            'reason': 'BLOCKED'
+                        })
+                elif event == 'scan_complete':
+                    # 完成事件
+                    self.status = 'completed'
+                    stats = self.scan_service.get_statistics() if self.scan_service else {}
+                    complete_data = data or {}
+                    # 将最终的分组结果转换为列表形式，便于前端直接展示
+                    final_grouped = complete_data.get('results') or {}
+                    if isinstance(final_grouped, dict):
+                        for keyword, positions in final_grouped.items():
+                            try:
+                                for pos in positions or []:
+                                    # 允许 positions 是 [start] 或 ["start-end"] 或 [start, end] 的灵活格式
+                                    if isinstance(pos, str) and '-' in pos:
+                                        parts = pos.split('-', 1)
+                                        start_pos = int(parts[0])
+                                        end_pos = int(parts[1])
+                                    elif isinstance(pos, (list, tuple)) and len(pos) == 2:
+                                        start_pos = int(pos[0]); end_pos = int(pos[1])
+                                    else:
+                                        # 只有起点时，按照关键词长度推断终点
+                                        start_pos = int(pos)
+                                        end_pos = start_pos + len(str(keyword))
+                                    self.results.append({
+                                        'text': str(keyword),
+                                        'start_pos': start_pos,
+                                        'end_pos': end_pos,
+                                        'reason': 'BLOCKED'
+                                    })
+                            except Exception:
+                                # 忽略个别格式异常
+                                continue
+                    self.summary = {
+                        'api_calls': stats.get('api_calls') or complete_data.get('total_requests') or 0,
+                        'elapsed_time': complete_data.get('duration_seconds') or complete_data.get('execution_time') or 0,
+                        'unknown_status_codes': complete_data.get('unknown_status_codes') or []
+                    }
+                    # 将进度置为 100%
+                    total = self.progress.get('total') or 0
+                    self.progress.update({'current': total, 'percentage': 100})
+                elif event == 'log':
+                    level = message.get('level') or data.get('level') or 'info'
+                    msg = message.get('message') or data.get('message') or ''
+                    self.logs.append({
+                        'timestamp': datetime.now().isoformat(),
+                        'level': level,
+                        'message': msg,
+                    })
+                elif event == 'error':
+                    self.status = 'error'
+                    msg = message.get('message') or data.get('message') or '扫描错误'
+                    self.logs.append({
+                        'timestamp': datetime.now().isoformat(),
+                        'level': 'error',
+                        'message': msg,
+                    })
+            except Exception as e:
+                logger.error(f"[{self.session_id}] 处理事件回调失败: {e}", exc_info=True)
+
+        # 确保服务初始化
+        if not self.scan_service or not self.scan_service.is_initialized:
+            await self.initialize(event_callback=event_cb)
+
+        # 重置缓存
+        self.status = 'scanning'
+        self.progress = {'current': 0, 'total': len(text), 'percentage': 0}
+        self.results = []
+        self.logs = []
+        self.summary = {}
+
+        # 启动异步扫描任务
+        async def run():
+            try:
+                await self.scan_service.scan_text(text, event_cb)
+                # 如果扫描流程未显式发出 completed（极少数异常分支），这里兜底
+                if self.status not in ('completed', 'error', 'canceled'):
+                    self.status = 'completed'
+            except asyncio.CancelledError:
+                self.status = 'canceled'
+            except Exception as e:
+                logger.error(f"[{self.session_id}] 扫描任务内部异常: {e}", exc_info=True)
+                self.status = 'error'
+
+        self.scan_task = asyncio.create_task(run())
+
+    def get_scan_status(self) -> Dict[str, Any]:
+        return {
+            'status': self.status,
+            'current': self.progress.get('current', 0),
+            'total': self.progress.get('total', 0),
+            'percentage': self.progress.get('percentage', 0)
+        }
+
+    def get_scan_results(self) -> Dict[str, Any]:
+        # 去重（按 start_pos, end_pos, text）
+        unique = {}
+        for r in self.results:
+            key = (int(r.get('start_pos', -1)), int(r.get('end_pos', -1)), str(r.get('text', '')))
+            if key not in unique:
+                unique[key] = r
+        deduped_results = list(unique.values())
+        return {
+            'results': deduped_results,
+            'api_calls': self.summary.get('api_calls', 0),
+            'elapsed_time': self.summary.get('elapsed_time', 0),
+            'unknown_status_codes': self.summary.get('unknown_status_codes', [])
         }
 
 class SessionManager:
