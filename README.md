@@ -7,13 +7,11 @@
 [![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![License](https://img.shields.io/badge/License-GPLv3-blue.svg?style=flat-square)](./LICENSE)
 
-**面向内容安全、风控合规与平台运营的敏感内容精确定位工具**
+
 
 [功能特性](#功能特性) • [演示效果](#演示效果) • [快速开始](#快速开始) • [文档索引](#文档索引) • [工作原理](#工作原理) • [免责声明](#免责声明)
 
 </div>
-
----
 
 ## 项目简介
 
